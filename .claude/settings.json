@@ -1,0 +1,158 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:docs.anthropic.com)",
+      "WebFetch(domain:docs.claude.com)",
+      "WebFetch(domain:docs.python.org)",
+      "WebFetch(domain:developer.mozilla.org)",
+      "WebFetch(domain:doc.rust-lang.org)",
+      "WebFetch(domain:nodejs.org)"
+    ],
+    "deny": [
+      "Read(//**/.env*)",
+      "Read(//**/.netrc)",
+      "Read(//**/.git-credentials)",
+      "Read(//**/*.pem)",
+      "Read(//**/*.key)",
+      "Read(//**/id_rsa*)",
+      "Read(//**/id_ed25519*)",
+      "Read(//**/*_rsa)",
+      "Read(//**/*.ppk)",
+      "Read(//**/secrets/**)",
+      "Read(//**/credentials*.json)",
+      "Read(//**/service-account*.json)",
+      "Read(//**/.credentials.json)",
+      "Read(//**/.npmrc)",
+      "Read(//**/.pypirc)",
+      "Read(//**/*.tfstate)",
+      "Read(//**/*.tfstate.backup)",
+      "Read(//**/*.tfvars)",
+      "Read(//**/*.p12)",
+      "Read(//**/*.pfx)",
+      "Read(//**/*.jks)",
+      "Read(//**/*.keystore)",
+      "Read(//**/*.gpg)",
+      "Read(//**/*.asc)",
+      "Read(//**/config/secrets.yml)",
+      "Read(//**/config/master.key)",
+      "Read(~/.ssh/**)",
+      "Read(~/.aws/**)",
+      "Read(~/.config/gcloud/**)",
+      "Read(~/.kube/config)",
+      "Read(~/.docker/config.json)",
+      "Edit(//**/.env*)",
+      "Edit(//**/.netrc)",
+      "Edit(//**/.git-credentials)",
+      "Edit(//**/*.pem)",
+      "Edit(//**/*.key)",
+      "Edit(//**/id_rsa*)",
+      "Edit(//**/id_ed25519*)",
+      "Edit(//**/*_rsa)",
+      "Edit(//**/*.ppk)",
+      "Edit(//**/secrets/**)",
+      "Edit(//**/credentials*.json)",
+      "Edit(//**/service-account*.json)",
+      "Edit(//**/.credentials.json)",
+      "Edit(//**/.npmrc)",
+      "Edit(//**/.pypirc)",
+      "Edit(//**/*.tfstate)",
+      "Edit(//**/*.tfvars)",
+      "Edit(//**/*.p12)",
+      "Edit(//**/*.pfx)",
+      "Edit(//**/*.jks)",
+      "Edit(//**/*.keystore)",
+      "Edit(//**/config/secrets.yml)",
+      "Edit(//**/config/master.key)",
+      "Edit(~/.ssh/**)",
+      "Edit(~/.aws/**)",
+      "Edit(~/.config/gcloud/**)",
+      "Edit(//**/.git/**)",
+      "Edit(//**/package-lock.json)",
+      "Edit(//**/yarn.lock)",
+      "Edit(//**/pnpm-lock.yaml)",
+      "Edit(//**/poetry.lock)",
+      "Edit(//**/Cargo.lock)",
+      "Edit(//**/composer.lock)",
+      "Edit(//**/node_modules/**)",
+      "Edit(//**/dist/**)",
+      "Edit(//**/build/**)",
+      "Bash(env)",
+      "Bash(printenv*)",
+      "Bash(export -p)",
+      "Bash(gh auth token*)",
+      "Bash(gh auth status --show-token*)",
+      "Bash(aws configure get*)",
+      "Bash(aws sts get-session-token*)",
+      "Bash(gcloud auth print-access-token*)",
+      "Bash(gcloud auth print-identity-token*)",
+      "Bash(kubectl config view --raw*)",
+      "Bash(git push --force*)",
+      "Bash(git push -f *)",
+      "Bash(git reset --hard*)",
+      "Bash(git clean -f*)",
+      "Bash(git clean --force*)",
+      "Bash(git branch -D *)",
+      "Bash(git branch --delete*)",
+      "Bash(git filter-branch*)",
+      "Bash(git commit --no-verify*)",
+      "Bash(git commit -n *)",
+      "Bash(rm -rf /*)",
+      "Bash(rm -rf ~*)",
+      "Bash(rm -rf ~/*)",
+      "Bash(sudo rm*)",
+      "Bash(chmod -R 777*)"
+    ],
+    "ask": [
+      "Bash(git commit*)",
+      "Bash(git push*)",
+      "Bash(npm publish*)",
+      "Bash(docker push *)",
+      "Bash(gh release create *)"
+    ]
+  },
+  "enabledPlugins": {
+    "context7@claude-plugins-official": true,
+    "frontend-design@claude-plugins-official": true,
+    "skill-creator@claude-plugins-official": true,
+    "playwright@claude-plugins-official": false,
+    "hookify@claude-plugins-official": true,
+    "claude-code-setup@claude-plugins-official": true,
+    "document-skills@anthropic-agent-skills": true
+  },
+  "sandbox": {
+    "enabled": false,
+    "enableWeakerNestedSandbox": true,
+    "failIfUnavailable": true,
+    "autoAllowBashIfSandboxed": true,
+    "allowUnsandboxedCommands": false,
+    "network": {
+      "allowedDomains": []
+    },
+    "filesystem": {
+      "allowWrite": [
+        "~/.kube",
+        "/tmp/build"
+      ]
+    },
+    "excludedCommands": [
+      "docker *"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_input.file_path' | { read -r f; echo \"$(date '+%Y-%m-%d %H:%M:%S') - $f\" >> /workspaces/cc-dev-container/creation_log.md; } 2>/dev/null || true"
+          }
+        ]
+      }
+    ]
+  },
+  "plansDirectory": "./docs/plans",
+  "tui": "fullscreen",
+  "autoScrollEnabled": false
+}
