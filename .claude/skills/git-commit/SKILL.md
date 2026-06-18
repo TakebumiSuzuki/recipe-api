@@ -1,6 +1,6 @@
 ---
 name: git-commit
-description: Stage and commit changes to git with a reviewed, Conventional-Commits message generated from the actual diff. Use this whenever the user wants to commit, save, or check in changes — phrasings like "commit this", "commit these changes", "save my work to git", "add and commit", "コミットして", even when they don't name the skill. Always shows the staged files and the proposed message for confirmation before committing, warns before committing to main/master, scans for secrets and debug code, and never pushes.
+description: Stage and commit changes to git with a reviewed, Conventional-Commits message generated from the actual diff. Use this whenever the user wants to commit, save, or check in changes — phrasings like "commit this", "commit these changes", "save my work to git", "add and commit", even when they don't name the skill. Always shows the staged files and the proposed message for confirmation before committing, warns before committing to main/master, scans for secrets and debug code, and never pushes.
 ---
 
 # Git Commit
@@ -65,10 +65,11 @@ Subject-line rules: **imperative mood** (`Add`, `Fix`, `Update` — not `Added` 
 **≤ 50 characters**, capitalized, **no trailing period**. Separate subject and body with one
 blank line, and wrap the body at ~72 characters. Omit the body for a trivial one-line change.
 
-Append this trailer as the last line of the message:
+Append a co-author trailer as the last line of the message, with your own model name
+filled in (never a hardcoded one):
 
 ```
-Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+Co-Authored-By: <your model name> <noreply@<vendor-domain>>
 ```
 
 Full example:
@@ -79,7 +80,7 @@ feat(auth): add password reset endpoint
 Send a reset token by email and expire it after 30 minutes.
 
 Refs: #123
-Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+Co-Authored-By: Claude Sonnet 4.6 <noreply@<vendor-domain>>
 ```
 
 ## Step 4 — Confirmation gate (do not skip)
@@ -102,7 +103,7 @@ feat(auth): add password reset endpoint
 
 Send a reset token by email and expire it after 30 minutes.
 
-Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
 EOF
 )"
 ```
