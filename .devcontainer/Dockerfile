@@ -143,6 +143,9 @@ RUN npm install -g @anthropic-ai/claude-code docx pptxgenjs @anthropic-ai/sandbo
 # なお @playwright/cli の既定ブラウザは chrome チャンネル（実物 Chrome）であり、同梱 Chromium を
 # 使うには実行側で browserName=chromium の指定が要る（リポジトリ直下の .playwright/cli.config.json
 # で既定化済み。workspace 内から実行すれば自動適用される）。
-RUN playwright-cli install-browser chromium
+# --only-shell でフル Chromium(約624MB)を省き、ヘッドレスシェル(約334MB)だけ入れてイメージを縮小する。
+# この devcontainer は表示(X サーバ)を持たずヘッドレス運用が前提のため。代償としてヘッド付き(--headed)
+# 操作と channel='chromium'（新ヘッドレスモード）は使えなくなる。それらが必要になったら --only-shell を外す。
+RUN playwright-cli install-browser chromium --only-shell
 
 WORKDIR /workspaces/cc-dev-container
