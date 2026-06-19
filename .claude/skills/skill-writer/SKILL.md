@@ -98,6 +98,10 @@ skill-name/
     └── assets/        files used in the output (templates, fonts, icons)
 ```
 
+The folder name is the skill's `name`: lowercase letters, numbers, and hyphens only, and
+clearest as a gerund or noun phrase that names what the skill does (`processing-pdfs`,
+`pdf-processing`) — not a vague `helper` or `utils`.
+
 ### The description (write this first)
 
 The `description` in the frontmatter is the single most important line: it's what the
@@ -116,6 +120,11 @@ should pull it in, including cases where the user won't name the skill explicitl
 For an **explicit-only** skill (from step 1), do the opposite: keep the description
 short and factual so the model doesn't grab it on its own.
 
+Either way, write the description in the **third person** ("Generates commit messages by
+analyzing the staged diff…"), not the first or second ("I can help…", "You can use this
+to…"). It's injected verbatim into the system prompt next to every other skill's, and a
+mixed point of view there muddies triggering.
+
 ### Other frontmatter fields
 
 Beyond `name` and `description`, frontmatter can carry more — invocation control, tool
@@ -131,11 +140,18 @@ when the skill fires, **scripts / references / assets** only as needed — so pu
 where it gets seen at the right time. The non-obvious part: "always in context" is not the
 same as *short*, since an auto-trigger description still has to name all its triggers.
 
-Two cautions:
-- If the body gets long, prefer adding clear internal headings over splitting into many
-  side files. A separate file the model is *told* to read is a file it often *won't*.
-  Split only when a chunk is large
-  and genuinely optional for a given run.
+A few structural guidelines:
+- Keep the SKILL.md body roughly **under ~500 lines**. As it grows, prefer adding clear
+  internal headings over splitting into many side files — a separate file the model is
+  *told* to read is a file it often *won't*. Split only when a chunk is large and
+  genuinely optional for a given run.
+- Keep `references/` links **one level deep**: each one pointed to directly from
+  SKILL.md, not from another reference file. The model tends to preview deeply-nested
+  files (e.g. with `head`) and read them only partially, so anything reached by a chain
+  of links often gets skimmed rather than read in full.
+- Give any reference file longer than ~100 lines a **table of contents** at the top, so
+  the model sees the full scope of what's there even when it previews the file instead of
+  reading the whole thing.
 - When a skill spans variants (aws/gcp/azure), a `references/<variant>.md` split is the
   right call, because the model only ever needs one.
 
@@ -208,8 +224,8 @@ checklist:
 - Was every **exact** string (API name, CLI flag, signature, config key) confirmed from
   documentation rather than written from memory?
 - If the skill **splits into side files** (`references/`, `scripts/`): is each one
-  actually pointed to from the body, and does it read cleanly on its own without
-  contradicting `SKILL.md`?
+  actually pointed to from the body (one level deep, not via another reference file), and
+  does it read cleanly on its own without contradicting `SKILL.md`?
 
 ---
 
@@ -220,19 +236,13 @@ you meant, and the gaps your own words quietly paper over stay invisible to you.
 subagent has none of that context. If subagents are available, spend one on a cold read —
 it catches what self-review structurally can't.
 
-Hand the subagent the skill's one-line purpose as the ground-truth intent, and have it
-read the whole SKILL.md — plus any `references/` or `scripts/` files it points to — as a
-first-time user. Give it a prompt that asks for located problems, not praise or rewrites:
+The review prompt lives in `references/independent-review-prompt.md` — point the subagent at
+it rather than retyping it (a hand-copied prompt drifts). Spawn it with just:
 
 ```
-Read the SKILL.md at <path>, plus any files it points to under references/ and scripts/.
-Its purpose: <one line>.
-Read them as a first-time user who has to follow them.
-Report specific, located problems only: quote the line, give the category, explain in one
-sentence. Categories: redundant/verbose (says it twice or wordy), unclear/ambiguous (a
-first-timer couldn't tell what to do), contradictory (two instructions can't both hold),
-logical holes (a step assumes something never established, or a case falls through). Do
-not rewrite, do not praise, do not list strengths. If a category has nothing, say so.
+Your complete instructions are in <abs-path>/references/independent-review-prompt.md.
+Read that file fully and follow it. The SKILL.md under review is at <path>. Its purpose is:
+<one line>.
 ```
 
 Then **you decide**. Not every flag deserves a fix — a nitpick that adds words back is
