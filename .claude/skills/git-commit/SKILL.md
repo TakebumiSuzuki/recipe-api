@@ -1,6 +1,7 @@
 ---
 name: git-commit
-description: Stage and commit changes to git with a reviewed, Conventional-Commits message generated from the actual diff. Use this whenever the user wants to commit, save, or check in changes — phrasings like "commit this", "commit these changes", "save my work to git", "add and commit", even when they don't name the skill. Always shows the staged files and the proposed message for confirmation before committing, warns before committing to main/master, scans for secrets and debug code, and never pushes.
+description: Stage and commit changes to git with a reviewed, Conventional-Commits message generated from the actual diff. Use this whenever the user wants to commit, save, or check in changes — phrasings like "commit this", "commit these changes", "save my work to git", "add and commit", even when they don't name the skill.
+allowed-tools: Bash(git status:*), Bash(git diff:*), Bash(git branch:*), Bash(git add:*), Bash(git commit:*)
 ---
 
 # Git Commit
@@ -23,28 +24,37 @@ Never describe the changes from memory. Read what actually changed first:
 
 If `git status` shows nothing to commit, stop and tell the user; there is nothing to do.
 
-## Step 1 — Branch check
+## Step 1 — Safety scan (what must never be staged)
 
-If the current branch is `main` or `master` (or another branch you can tell is shared or
-protected, e.g. a release branch), **warn the user and wait for their answer** before going
-further: commit here anyway, or create a branch first? Do not proceed to staging until they
-reply, and do not silently commit to a protected branch.
+Scan the diff and file list for things that must not be committed: secrets / API keys /
+`.env` files, large binaries or build artifacts, and leftover debug code (`console.log`,
+`print`, commented-out blocks, `TODO: remove`). If you find any, **stop, flag it, and let
+the user resolve it** (remove the secret, add to `.gitignore`, etc.), then re-run the
+preflight checks before continuing. Do not stage flagged content.
 
-## Step 2 — Decide what to stage (be deliberate)
+## Step 2 — Decide what to stage and stage it
 
-- Stage only the files that belong in this commit. Do **NOT** reflexively
-  `git add -A` / `git add .` — look at the list first.
-- If the wrong files are already staged (from the preflight), unstage them with
-  `git restore --staged <paths>`.
-- If the changes span unrelated concerns, propose splitting them into separate commits
-  (one logical change per commit).
-- Scan the diff and file list for things that must not be committed: secrets / API keys /
-  `.env` files, large binaries or build artifacts, and leftover debug code (`console.log`,
-  `print`, commented-out blocks, `TODO: remove`). If you find any, **stop, flag it, and let
-  the user resolve it** (remove the secret, add to `.gitignore`, etc.), then re-run the
-  preflight checks before continuing. Do not stage flagged content.
+Be deliberate about scope. Stage only the files that belong in this commit — do **NOT**
+reflexively `git add -A` / `git add .`, look at the list first. If the wrong files are
+already staged (from the preflight), unstage them with `git restore --staged <paths>`.
 
-Then stage the intended files with `git add <paths>`.
+If the preflight shows changes that are **not yet staged** — modified-but-unstaged files, or
+untracked/new files — that could plausibly belong in this commit, do not decide their fate
+silently. First assess whether they look **related** to the intended commit (same feature,
+dependency, or scope) or like a **separate concern**. Then use **`AskUserQuestion`** to let
+the user pick. Offer options such as:
+
+- **Include them all** — stage everything and record it as one commit.
+- **Split — these look like a separate concern** — leave them out of this commit and commit
+  only the intended set now; handle the rest in a later commit.
+- **Only what's already staged** — commit the current staged set as-is, leave the rest.
+
+Put your recommended option first (based on your relatedness assessment) and label it
+`(Recommended)`. **Skip this question** when there is nothing unstaged (the staged set is
+already the whole story), or when the user already told you the scope (e.g. "commit
+everything", "just the staged files") — in that case follow their instruction.
+
+Once the scope is settled, stage the intended files with `git add <paths>`.
 
 ## Step 3 — Compose the message (Conventional Commits + clean subject/body rules)
 
@@ -65,13 +75,6 @@ Subject-line rules: **imperative mood** (`Add`, `Fix`, `Update` — not `Added` 
 **≤ 50 characters**, capitalized, **no trailing period**. Separate subject and body with one
 blank line, and wrap the body at ~72 characters. Omit the body for a trivial one-line change.
 
-Append a co-author trailer as the last line of the message, with your own model name
-filled in (never a hardcoded one):
-
-```
-Co-Authored-By: <your model name> <noreply@<vendor-domain>>
-```
-
 Full example:
 
 ```
@@ -80,30 +83,32 @@ feat(auth): add password reset endpoint
 Send a reset token by email and expire it after 30 minutes.
 
 Refs: #123
-Co-Authored-By: Claude Sonnet 4.6 <noreply@<vendor-domain>>
 ```
 
 ## Step 4 — Confirmation gate (do not skip)
 
-In a single message, show the user:
+This is the single human gate. In one message, show the user:
 
+- the current branch, and
 - the list of files that will be committed (the staged set), and
 - the full proposed commit message.
 
+If the branch is `main` / `master` or another shared/protected branch (e.g. a release
+branch), flag it here and offer to create a branch first instead of committing to it.
+
 Then ask whether to commit with this content. **Do not run `git commit` until the user
-confirms.** If they want changes, revise the message or the staged set and ask again.
+confirms.** If they want changes — a different branch, a revised message, or a different
+staged set — adjust and ask again.
 
 ## Step 5 — Commit, then stop
 
-Commit with a HEREDOC so the multi-line message and trailer are preserved exactly:
+Commit with a HEREDOC so the multi-line message is preserved exactly:
 
 ```bash
 git commit -m "$(cat <<'EOF'
-feat(auth): add password reset endpoint
+<subject>
 
-Send a reset token by email and expire it after 30 minutes.
-
-Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+<body>
 EOF
 )"
 ```
