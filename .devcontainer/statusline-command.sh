@@ -50,8 +50,24 @@ def rl_color(p):
     if p >= 50: return ORANGE
     return GRAY
 
+EFFORT_COLORS = {
+    'low':   GRAY,
+    'medium': CYAN,
+    'high':  GREEN,
+    'xhigh': ORANGE,
+    'max':   RED,
+}
+EFFORT_LABELS = {
+    'low':   'low',
+    'medium': 'med',
+    'high':  'high',
+    'xhigh': 'xhigh',
+    'max':   'MAX',
+}
+
 cwd = d.get('cwd', '')
 model = (d.get('model') or {}).get('display_name', '...')
+effort_level = (d.get('effort') or {}).get('level')  # Optional: only present when model supports reasoning
 
 ctx = d.get('context_window') or {}
 ctx_pct = pct(ctx.get('used_percentage'))
@@ -80,6 +96,10 @@ if cwd:
 
 # Build output
 out = '🤖 ' + MAGENTA + model + RESET
+if effort_level:
+    ecol = EFFORT_COLORS.get(effort_level, GRAY)
+    elab = EFFORT_LABELS.get(effort_level, effort_level)
+    out += '  ⚡' + ecol + elab + RESET
 if branch:
     out += '  ⎇ ' + CYAN + branch + RESET
 out += '  📊 ctx:' + ctx_color(ctx_pct) + ctx_pct + '%' + RESET

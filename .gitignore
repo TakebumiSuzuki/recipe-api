@@ -131,3 +131,6 @@ tmp/
 temp/
 *.bak
 *.tmp
+
+# ===== Project-local (not versioned) =====
+creation_log.md

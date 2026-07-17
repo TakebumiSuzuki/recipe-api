@@ -9,73 +9,61 @@ allowed-tools: Bash(git status:*), Bash(git diff:*), Bash(git branch:*), Bash(gi
 Stage and commit changes with a message generated from the **real diff**, written in
 English using Conventional Commits. The one rule that must never break:
 
-> **Show the user the staged files and the full proposed commit message, and wait for
-> them to confirm, before running `git commit`.**
+> **Show the user the files to be staged and the full proposed commit message, and wait
+> for them to confirm, before running `git add` or `git commit`.**
 
-## Preflight — gather ground truth (run all, in order)
+## Preflight — ground truth
 
-Never describe the changes from memory. Read what actually changed first:
+- Status (modified / staged / untracked): !`git status`
+- Unstaged changes: !`git diff`
+- Staged changes: !`git diff --staged`
+- Current branch: !`git branch --show-current`
 
-1. `git status` — what is modified / staged / untracked.
-2. `git diff` **and** `git diff --staged` — the actual content of the changes. Note that
-   `git diff` does NOT show the contents of untracked (new) files; open those files
-   directly (or `git add -N <path>` first) so new code is reviewed too.
-3. `git branch --show-current` — which branch you are on.
+Note that `git diff` does NOT show the contents of untracked (new) files — open those
+files directly so new code is reviewed too.
 
-If `git status` shows nothing to commit, stop and tell the user; there is nothing to do.
+If the status above shows nothing to commit, stop and tell the user; there is nothing to do.
 
 ## Step 1 — Safety scan (what must never be staged)
 
-Scan the diff and file list for things that must not be committed: secrets / API keys /
-`.env` files, large binaries or build artifacts, and leftover debug code (`console.log`,
-`print`, commented-out blocks, `TODO: remove`). If you find any, **stop, flag it, and let
-the user resolve it** (remove the secret, add to `.gitignore`, etc.), then re-run the
-preflight checks before continuing. Do not stage flagged content.
+Scan the diff and file list for anything that must not enter history: secrets (API keys,
+`.env`, private-key files), large binaries or build artifacts, merge conflict markers, and
+generated dirs that should be gitignored (`node_modules/`, `venv/`, etc.).
 
-## Step 2 — Decide what to stage and stage it
+- Found something → **stop**, flag it to the user, and let them resolve it (remove the
+  secret, add to `.gitignore`, etc.). Re-run the preflight checks, then continue.
+  Do not stage flagged content.
+- Found nothing → continue to Step 2.
 
-Be deliberate about scope. Stage only the files that belong in this commit — do **NOT**
-reflexively `git add -A` / `git add .`, look at the list first. If the wrong files are
-already staged (from the preflight), unstage them with `git restore --staged <paths>`.
+## Step 2 — Decide what to stage
 
-If the preflight shows changes that are **not yet staged** — modified-but-unstaged files, or
-untracked/new files — that could plausibly belong in this commit, do not decide their fate
-silently. First assess whether they look **related** to the intended commit (same feature,
-dependency, or scope) or like a **separate concern**. Then use **`AskUserQuestion`** to let
-the user pick. Offer options such as:
+Be deliberate about scope — do **NOT** reflexively `git add -A` / `git add .`. Look at
+the list first, then run these checks:
 
-- **Include them all** — stage everything and record it as one commit.
-- **Split — these look like a separate concern** — leave them out of this commit and commit
-  only the intended set now; handle the rest in a later commit.
-- **Only what's already staged** — commit the current staged set as-is, leave the rest.
-
-Put your recommended option first (based on your relatedness assessment) and label it
-`(Recommended)`. **Skip this question** when there is nothing unstaged (the staged set is
-already the whole story), or when the user already told you the scope (e.g. "commit
-everything", "just the staged files") — in that case follow their instruction.
-
-Once the scope is settled, stage the intended files with `git add <paths>`.
+1. Files already staged that are unrelated to this commit → unstage with
+   `git restore --staged <paths>`.
+2. Unstaged/untracked changes that could plausibly belong → assess **related** (same
+   feature, dependency, or scope) vs. **separate concern**, then ask the user with
+   `AskUserQuestion` (your assessment first, labeled `(Recommended)`):
+   - **Include them all** — stage everything, one commit.
+   - **Split — separate concern** — leave out now, handle later.
+   - **Only what's already staged** — commit the current staged set as-is.
+3. Nothing unstaged, or the user already told you the scope (e.g. "commit everything",
+   "just the staged files") → skip the question, follow their instruction directly.
 
 ## Step 3 — Compose the message (Conventional Commits + clean subject/body rules)
 
-Write the message in **English**, in this shape:
+Write the message in **English** as `type(optional scope): imperative summary`, a blank
+line, then a body, then an optional footer.
 
-```
-<type>(<optional scope>): <imperative summary>
+- **Type**: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`,
+  `chore`, `revert`.
+- **Subject**: imperative mood, ≤ 50 characters, capitalized, no trailing period.
+- **Body**: explain WHAT changed and WHY — not HOW. Wrap at ~72 characters. Omit for a
+  trivial one-line change.
+- **Footer** (optional): e.g. `Refs: #123` or `BREAKING CHANGE: ...`.
 
-<body: explain WHAT changed and WHY, not how>
-
-<optional footer, e.g. Refs: #123  or  BREAKING CHANGE: ...>
-```
-
-`type` is one of: `feat` (new feature), `fix` (bug fix), `docs`, `style` (formatting only),
-`refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`.
-
-Subject-line rules: **imperative mood** (`Add`, `Fix`, `Update` — not `Added` / `Fixes`),
-**≤ 50 characters**, capitalized, **no trailing period**. Separate subject and body with one
-blank line, and wrap the body at ~72 characters. Omit the body for a trivial one-line change.
-
-Full example:
+Example:
 
 ```
 feat(auth): add password reset endpoint
@@ -87,22 +75,26 @@ Refs: #123
 
 ## Step 4 — Confirmation gate (do not skip)
 
-This is the single human gate. In one message, show the user:
+This is the single human gate — nothing has been staged yet. In one message, show the
+user:
 
 - the current branch, and
-- the list of files that will be committed (the staged set), and
+- the list of files that will be staged and committed, and
 - the full proposed commit message.
 
-If the branch is `main` / `master` or another shared/protected branch (e.g. a release
-branch), flag it here and offer to create a branch first instead of committing to it.
+- Branch is `main` / `master` or another shared/protected branch (e.g. a release branch)
+  → flag it here and offer to create a branch first instead of committing to it.
 
-Then ask whether to commit with this content. **Do not run `git commit` until the user
-confirms.** If they want changes — a different branch, a revised message, or a different
-staged set — adjust and ask again.
+Then ask whether to commit with this content.
 
-## Step 5 — Commit, then stop
+- User confirms → proceed to Step 5. **Do not run `git commit` before this.**
+- User wants changes (different branch, revised message, different file set) → adjust
+  and show this gate again.
 
-Commit with a HEREDOC so the multi-line message is preserved exactly:
+## Step 5 — Stage, commit, then stop
+
+Stage the confirmed files with `git add <paths>`. Then commit with a HEREDOC so the
+multi-line message is preserved exactly:
 
 ```bash
 git commit -m "$(cat <<'EOF'
@@ -122,4 +114,4 @@ let the user decide — do not loop retrying.
 ---
 
 **Reminder:** the message comes from the real diff, and `git commit` runs only after the
-user has confirmed the staged files and the message.
+user has confirmed the file list and the message.

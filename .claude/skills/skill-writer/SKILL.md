@@ -120,10 +120,11 @@ should pull it in, including cases where the user won't name the skill explicitl
 For an **explicit-only** skill (from step 1), do the opposite: keep the description
 short and factual so the model doesn't grab it on its own.
 
-Either way, write the description in the **third person** ("Generates commit messages by
-analyzing the staged diff…"), not the first or second ("I can help…", "You can use this
-to…"). It's injected verbatim into the system prompt next to every other skill's, and a
-mixed point of view there muddies triggering.
+Either way, **avoid first and second person** ("I can help…", "You can use this to…"): the
+description is injected verbatim into the system prompt next to every other skill's, and a
+mixed point of view there muddies triggering. Third person ("Generates commit messages…")
+and imperative ("Generate commit messages…", "Use when…") both read cleanly — either is
+fine, and most real descriptions use the imperative.
 
 ### Other frontmatter fields
 
