@@ -1,0 +1,15 @@
+#!/bin/sh
+
+echo "pre-commit フックが発火"
+# 1. ステージングされたPythonファイルを取得
+FILES=$(git diff --cached --name-only --diff-filter=ACM "*.py")
+
+# 対象ファイルがあれば、フォーマットだけして再addする
+if [ -n "$FILES" ]; then
+    echo "Ruff: Formatting staged files..."
+    uv run ruff format $FILES
+    git add $FILES
+fi
+
+# エラーチェックは一切せず、100% 成功させてコミットを通す！
+exit 0
