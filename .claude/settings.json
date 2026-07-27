@@ -152,5 +152,8 @@
   },
   "plansDirectory": "./docs/plans",
   "tui": "fullscreen",
-  "autoScrollEnabled": false
+  "autoScrollEnabled": false,
+  "worktree": {
+    "bgIsolation": "none"
+  }
 }
