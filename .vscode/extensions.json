@@ -1,0 +1,33 @@
+{
+  "recommendations": [
+    // JSON, YAMLは VSCodeはデフォルトでサポート。TOMLは非対応なのでこれを入れる。
+    "tamasfe.even-better-toml",
+
+    // JS, TS
+    "esbenp.prettier-vscode",
+    "dbaeumer.vscode-eslint",
+    "vue.volar",
+
+    // Python
+    "ms-python.python",
+    "ms-python.pylance",
+    "charliermarsh.ruff",
+
+    // Git。インラインBlameが邪魔に感じる場合には設定可能
+    "eamodio.gitlens",
+
+    // 英単語のスペルミスを指摘
+    "streetsidesoftware.code-spell-checker",
+
+    // エラーをインライン表示。警告レベルの絞り込みをしたい場合には設定をする。
+    "usernamehw.errorlens",
+
+    // "./"のような、"クォートの中にいること＋パスっぽい文字列"があったときに、補完が起動。
+    // 単純にテキストパターン(文字面)だけ見ているので、言語を問わずパス補完。
+    // しかし！ Pylance, tsserverのインポート文の補完部分では機能が被る。
+    // コードの中で、open()と書く場合や、YAML/TOMLなどではこの extension のみが効く。
+    // 解決策として、settings.json の中で"editor.quickSuggestions"の設定をして
+    // yaml, tomlだけこの拡張が機能するように設定可能。
+    "christian-kohler.path-intellisense"
+  ]
+}

@@ -144,7 +144,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "jq -r '.tool_input.file_path' | { read -r f; echo \"$(date '+%Y-%m-%d %H:%M:%S') - $f\" >> /workspaces/cc-dev-container/creation_log.md; } 2>/dev/null || true"
+            "command": "jq -r '.tool_input.file_path' | { read -r f; echo \"- $(date '+%Y-%m-%d %H:%M:%S') - $f\" >> /workspaces/cc-dev-container/creation_log.md; } 2>/dev/null || true"
           }
         ]
       }

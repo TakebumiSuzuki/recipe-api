@@ -2,7 +2,7 @@
 
 echo "pre-commit フックが発火"
 # 1. ステージングされたPythonファイルを取得
-FILES=$(git diff --cached --name-only --diff-filter=ACM "*.py")
+FILES=$(git diff --staged --name-only --diff-filter=ACMR "*.py")
 
 # 対象ファイルがあれば、フォーマットだけして再addする
 if [ -n "$FILES" ]; then

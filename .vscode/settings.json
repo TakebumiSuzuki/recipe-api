@@ -1,0 +1,112 @@
+
+// このプロジェクトを開いている時だけ適用される、VSCodeのエディタ設定。あなたのPC全体の VSCode 設定を汚すことなく、
+// このプロジェクトにのみ設定が適用される。また、devcontainer.json の中に書かれた設定よりもこちらが優先される。
+{
+  // Tabキーを押したときに、タブ文字ではなくスペースを入力するという設定。デフォルトは true
+	"editor.insertSpaces": true,
+  "editor.tabSize": 2, //デフォルト 4
+
+	"files.autoSave": "afterDelay", //デフォルト off
+	"files.autoSaveDelay": 1000, //デフォルト 1000
+
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  // 入力時に自動フォーマット（括弧補完など）。デフォルトは false
+  "editor.formatOnType": false,
+  // 手動保存時にフォーマッターがトリガーされる設定。自動保存ではトリガーされない。デフォルトは false
+  "editor.formatOnSave": true,
+  // ペースト時に自動フォーマット。デフォルトは false
+  "editor.formatOnPaste": true,
+
+  // "Python拡張機能"に使用するPythonインタープリターを指定する設定。
+  // デフォルトではプロジェクトフォルダ直下の ./.venv/bin/python を探す。
+  // Python 拡張機能は、コードの補完やエラー検出を行う際、コードを実際に実行するのではなく、
+  // .venv 内のライブラリをチェックして型や属性情報を取得する。そのためにこのパスが必要になる。
+  // 一方、右上の再生ボタンを押した際や、デバッグ時には、このインタープリターが直接使用(実行)される。
+  // JSと違い、Python では仮想環境の置き場所や名前が自由すぎるため、VSCode にパスを教える必要がある。
+  // ちなみに Node の方は、tsserver が自動で node_modules などを探してくれるため、このような設定は不要。
+  // ${workspaceFolder} について、これはOSの環境変数ではなく、VS Code が内部的に文字列を置換する仕組み。
+  // 主な定義済み変数としては ${workspaceFolder}（開いているワークスペースのルートパス）、
+  // ${file}（現在開いているファイル）、${env:SOME_VAR}（OS環境変数の参照）などがある。
+  "python.defaultInterpreterPath": "${workspaceFolder}/backend/.venv/bin/python",
+	"[python]": {
+    "editor.tabSize": 4,
+    "editor.defaultFormatter": "charliermarsh.ruff",
+	},
+  // Microsoft 公式の Python 拡張機能、およびそれに同梱されている言語サーバー Pylance に対する設定。デフォルトは off
+  // ちなみに、TypeScriptの型チェック設定は、ここではなく tsconfig.json ファイル内で制御す。これはコンパイルの機能も関係してくるため。
+  "python.analysis.typeCheckingMode": "standard",
+
+  // まだ　import　していないクラス・関数の名前を入力中に、補完候補として出してくれて、
+  // 選ぶとimport文も自動で1行追加してくれる設定
+  "python.analysis.autoImportCompletions": true,
+
+  // Ruff の実行ファイルを、VS Code 拡張機能にバンドルされたものではなく、現在の環境（venv や conda など）に
+  // インストールされたものを優先して使うという設定。デフォルトは "fromEnvironment"
+  "ruff.importStrategy": "fromEnvironment",
+
+  // VS Code が使用する TypeScript のバージョンを、プロジェクト内のものに固定する設定
+  // 何も設定しないと、VS Code 自身に内蔵されたバージョンを使ってエディタ上のエラーチェックや補完を行う
+  "js/ts.tsdk.path": "${workspaceFolder}/frontend/node_modules/typescript/lib",
+
+	// プロジェクトのルート直下に package.json がなく、サブフォルダ（例: frontend/ や backend/）の中にある場合、
+	// ESLint 拡張に「ここが作業場所だよ」と教える設定。デフォルト("location")だと、ルート直下のみしか見てくれない。以下の設定をすると、
+  // 開いているファイルの場所から最も近い package.json があるディレクトリを自動で作業ディレクトリに設定してくれる
+  // 目的は、node_modules ファイルを見つけ、それにより、ライブラリのパスを解決するため
+	"eslint.workingDirectories": [{"mode": "auto"}],
+
+  // eslint にはエラーの"検出"と、"修正"、という２つの役割があるが、ここは検出の方の設定。
+	// 文字を入力するそばから、リアルタイムで構文解析が走るようにする。デフォルトは"onType"
+  // eslint は ruff と同様、LSPサーバー。しかし動作は多少遅いので、場合によっては onSave にするケースもある。
+  // (ruffの方もデフォルトで onType であり、変更は多分できない。よって記述しない)
+	"eslint.run": "onType",
+
+  // editor.codeActionsOnSaveは、ファイルが保存されるタイミングで、VSCode が実行すべきコードアクション（修正処理）を指定する設定
+  // "explicit" は、「ユーザーが手動で保存操作（Ctrl+S や Cmd+S）をしたときのみ実行する」 という設定
+	// ESLint や Ruff などは、VSCode に対して「私は source.fixAll.ruff という種別の修正機能を持っていますよ」と登録している
+  // これにより、VSCode がセーブ時に、登録されている拡張機能の中から source.fixAll.ruff タグがついている機能を呼び出して実行する
+	// VS Codeの仕様では、通常以下の順番で処理されます。
+	// 1. CodeActionsOnSave (ESLint) がまず走って、ロジックを修正。
+  // 2. FormatOnSave (Prettier) が次に走って、見た目をきれいに。
+	"editor.codeActionsOnSave": {
+    "source.fixAll.eslint": "explicit",
+    "source.fixAll.ruff": "explicit",
+    "source.organizeImports.ruff": "explicit",
+  },
+
+	"eslint.codeActionsOnSave.rules": [
+    "!@typescript-eslint/no-unused-vars",
+    "!no-unused-vars"
+	],
+
+  // Prettierの設定ファイルが存在する場合のみフォーマットを実行
+  "prettier.requireConfig": true,
+
+  // VSCode 内蔵フォーマッターや Vue公式プラグイン内蔵のフォーマッターとの競合を避けるため、以下のように明記
+  "[javascript]": {
+      "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "[typescript]": {
+      "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "[vue]": {
+      "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "[json]": {
+      "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "[jsonc]": {
+      "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "[html]": {
+      "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "[css]": {
+      "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "[scss]": {
+      "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "[markdown]": {
+      "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+}

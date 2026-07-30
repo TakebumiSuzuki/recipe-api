@@ -7,6 +7,10 @@ FROM node:22-bookworm
 # イメージ全体を pull してから必要なファイルだけコピーしている。マルチステージビルドの仕組み。
 COPY --from=ghcr.io/astral-sh/uv:0.11.8 /uv /uvx /usr/local/bin/
 
+# ruff（Python の高速 linter/formatter、Rust 製の単一バイナリ）を Astral 公式イメージからコピー。
+# uv と同じ仕組み。Python 非依存なので venv には入れず /usr/local/bin へ直接置く（owner root・755）。
+COPY --from=ghcr.io/astral-sh/ruff:0.16.0 /ruff /usr/local/bin/ruff
+
 # --no-install-recommends は推奨パッケージ(必須ではないが慣習的に一緒に入るもの)はインストールしない。
 # apt-get でインストールしたプログラムは、ほぼ /usr/ 配下（bin, lib, share に分散）に配置される。
 # /usr/ は、root所有で 755 (rwxr-xr-x)、全ユーザーで読み取りと実行が可能。
