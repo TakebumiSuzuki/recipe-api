@@ -1,15 +1,16 @@
-# node は、公式インストーラーを使ったのと同じように、ファイルは /usr/local/ 以下に散在している。
-# /usr は "Unix System Resources" の略で、プログラム・ライブラリ・ドキュメント類を置くディレクトリ。
-FROM node:22-bookworm
+# node は、(apt-get ではなく) Node.js 公式サイトが配布するインストーラーを使った時のように、
+# ファイルは /usr/local/ 以下に散在(/bin, /lib, /share など)している。ちなみに、
+# 専属パッケージ管理ツールの apt-get を使うと /usr/ 内にインストールされる。
+# また、/usr は "Unix System Resources" の略で、プログラム・ライブラリ・ドキュメント類を置くディレクトリ。
+FROM node:22-trixie
 
 # uv のバイナリを Astral 公式 distroless イメージからコピー。
 # /uv と /uvx は フォルダではなく単一の実行バイナリファイル。(libなどに分散していない)
 # イメージ全体を pull してから必要なファイルだけコピーしている。マルチステージビルドの仕組み。
 COPY --from=ghcr.io/astral-sh/uv:0.11.8 /uv /uvx /usr/local/bin/
 
-# ruff（Python の高速 linter/formatter、Rust 製の単一バイナリ）を Astral 公式イメージからコピー。
-# uv と同じ仕組み。Python 非依存なので venv には入れず /usr/local/bin へ直接置く（owner root・755）。
-COPY --from=ghcr.io/astral-sh/ruff:0.16.0 /ruff /usr/local/bin/ruff
+# ruff を Astral 公式イメージからコピー。uv と同じ仕組み。
+COPY --from=ghcr.io/astral-sh/ruff:0.16.0 /ruff /usr/local/bin/
 
 # --no-install-recommends は推奨パッケージ(必須ではないが慣習的に一緒に入るもの)はインストールしない。
 # apt-get でインストールしたプログラムは、ほぼ /usr/ 配下（bin, lib, share に分散）に配置される。
@@ -42,11 +43,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # uvが管理するPython本体を /opt/uv-python にインストール。
+# (pyproject.toml がないので uv add は使えず、uv pip install を使っている)
 #（uvのデフォルトは ~/.local/share/uv だが、この時点ではまだ root で実行されているため、結果として
 # /root/.local/share/uv になってしまう。そうすると、/root は慣習的に他ユーザーから隔離されており、
 # 後から root 以外のユーザーが読めないという問題が起こるため、/opt に移している）
 # /opt は、OSのパッケージ管理体系から外れた、追加でインストールするソフトウェア一式を置く場所。
 # 通常、/opt/<ベンダー名>/<製品名>/　のようになる。
+# chown = change owner。また、このベースイメージには node というユーザーとグループが定義済み。
 ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python
 
 RUN uv python install 3.13 \
@@ -125,7 +128,7 @@ RUN mkdir -p /opt/ms-playwright \
     && npx -y playwright install-deps chromium \
     && rm -rf /var/lib/apt/lists/*
 
-# コンテナが起動した時のメインプロセスを実行する人
+# コンテナが起動した時のメインプロセス(pid1)を実行する人
 USER node
 
 # node ユーザーとして global にインストールを実行 (/opt/npm-global)
@@ -135,8 +138,7 @@ USER node
 # @playwright/cli（コマンド名 playwright-cli）は AI エージェント向けの対話的ブラウザ操作 CLI。
 # デーモンが常駐してブラウザを開いたまま保持し、snapshot で画面状態を見ながら click/fill 等を
 # 継続できる（単発 CLI と違い 1 コマンドごとに閉じない）。スナップショットをディスクに保存する
-# ため MCP 版よりトークン効率が良い。npm グローバルなので /opt/npm-global に node 所有で入り、
-# シャドウイングされず auto-update も効く。
+# ため MCP 版よりトークン効率が良い。
 RUN npm install -g @anthropic-ai/claude-code docx pptxgenjs @anthropic-ai/sandbox-runtime @playwright/cli@latest
 
 # @playwright/cli が要求する「正確なリビジョン」の Chromium 本体を、CLI 純正コマンドで取得する。
@@ -144,12 +146,15 @@ RUN npm install -g @anthropic-ai/claude-code docx pptxgenjs @anthropic-ai/sandbo
 # playwright-core の要求リビジョンとずれ、起動時に「Browser is not installed」になるため不可。
 # OS 依存ライブラリは上の root 段階で導入済みなので --with-deps は付けない。保存先は上で node
 # 所有にした PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright のため、node のまま sudo 不要で書ける。
-# なお @playwright/cli の既定ブラウザは chrome チャンネル（実物 Chrome）であり、同梱 Chromium を
+# なお @playwright/cli のデフォルトブラウザは chrome チャンネル（実物 Chrome）であり、同梱 Chromium を
 # 使うには実行側で browserName=chromium の指定が要る（リポジトリ直下の .playwright/cli.config.json
 # で既定化済み。workspace 内から実行すれば自動適用される）。
+# 注: devcontainer はヘッドレス運用が前提のため、(またイメージサイズも抑えたいため) Chromium を使用する。
 # --only-shell でフル Chromium(約624MB)を省き、ヘッドレスシェル(約334MB)だけ入れてイメージを縮小する。
-# この devcontainer は表示(X サーバ)を持たずヘッドレス運用が前提のため。代償としてヘッド付き(--headed)
-# 操作と channel='chromium'（新ヘッドレスモード）は使えなくなる。それらが必要になったら --only-shell を外す。
+# 代償としてヘッド付き(--headed)操作と channel='chromium'（新ヘッドレスモード）は使えなくなる。
+# それらが必要になったら --only-shell を外す。
 RUN playwright-cli install-browser chromium --only-shell
 
+# WORKDIR は指定したディレクトリが存在しなければ自動的に作成し、途中の親ディレクトリも含めて作ってくれる。
+# mkdir -p に近い挙動。
 WORKDIR /workspaces/cc-dev-container

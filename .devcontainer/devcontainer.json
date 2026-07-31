@@ -1,15 +1,19 @@
+// devcontainer 拡張がこの jsonファイルを読み込んでそれに従ってコンテナを作る。
 {
-  "name": "cc-dev-container",
+  "name": "TEMPLATE-PROJECT",
   "dockerComposeFile": "docker-compose.yml",
   "service": "claude-code",
   "workspaceFolder": "/workspaces/cc-dev-container",
-  // compose の user: ではなく remoteUser でユーザー切替を管理
-  // 省略した場合、VS CodeはDockerfileの USER（指定がなければ root）でコンテナに接続します。
-  // システム構築が終わった後、VS Codeがコンテナに入ってファイルの読み書きを行う際のユーザー。
-  // VS Code上でターミナルを開いたとき、その bash や zsh プロセスは remoteUser の権限で起動します。ファイルを作成・保存するバックエンドプロセスも同様
-  // コンテナを起動した後、VS Codeは裏側で **`docker exec` を使って、コンテナの中に「VS Code Server」というNode.jsのプログラムを放り込みます**（前回お話しした `setns()` による名前空間の参加です）
-  // VS Code上でターミナル（`bash` など）を開いたり、PythonやTypeScriptの拡張機能（言語サーバー）が起動したりするとき、これらは `dockerd` が直接外から放り込んでいるのではなく、**コンテナ内にいる「VS Code Server」が `fork()` して作った子プロセス
-  //`remoteUser` は、まさに**「放り込まれるプロセス（VS Code Serverやターミナルなど）を、コンテナ内のどのユーザーの権限で動かすか」**を指定するものです。
+  // remoteUser: コンテナ内で「VS Code Server」本体と、そこから生まれるプロセス
+  // （ターミナル、言語サーバーなど）をどのユーザー権限で動かすかを指定する設定。
+  // (省略した場合は Dockerfile の USER（未指定なら root）が使われる。)
+  //
+  // 1. コンテナ起動後、devcontainer拡張（ローカル側で動く拡張機能）が
+  //    docker exec -u <remoteUser> ... で「VS Code Server」というNode.jsプログラムを
+  //    コンテナ内に送り込み、remoteUser の権限で起動する。
+  // 2. その後、ターミナル（bash など）や言語サーバー（Python/TypeScript拡張機能）は、
+  //    外部から dockerd が都度送り込むのではなく、コンテナ内で動いている
+  //    VS Code Server のサブプロセスとして起動する。
   "remoteUser": "node",
 
   // コンテナ作成後、ユーザースコープ ~/.claude に statusLine をセットアップ
@@ -17,8 +21,8 @@
   //  ~/.claude/settings.json には statusLine キーを jq でマージし既存設定は保持)
   "postCreateCommand": "sh .devcontainer/setup-statusline.sh",
 
-  // features は使わない:
-  // features は Dev Container CLI / VS Code ビルド時にしか動かない。
+  // features は、 VS Code + devcontainer拡張での構成、または、 Dev Container CLI
+  // (CI等でも単体で使われる)でのビルド時にしか動かないので、ここでは使っていない。
   // 素の docker compose up でも同じ環境になるよう、
   // Claude Code CLI 含む全ツールを Dockerfile に直書きしている。
   "customizations": {

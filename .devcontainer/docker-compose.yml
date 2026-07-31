@@ -12,16 +12,16 @@ services:
       # これにより claude-state ボリューム１個で auth・設定・履歴の永続化が完結する。
       # ここで定義した環境変数は、Docker(エンジン/ランタイム)の機能として、PID 1 だけでなく
       # docker exec で入ってくるプロセス(VS Code Server・ターミナル等)にも注入される。
+      # 注入のタイミングは、コンテナの作成・起動時、つまりイメージビルド後の run の時。
       # 注入先は Dockerfile の ENV と同じで、プロセスから見ると両者の区別はつかない
       - CLAUDE_CONFIG_DIR=/home/node/.claude
     volumes:
-      # ワークスペース bind mount
-      # プロジェクト内で作る .venv や node_module は、名前付きボリュームに逃がすように設定していない。
-      # つまり、必ず、dev container内で使うことを想定している。ホスト側からは動かないので注意。
+      # 必ず、dev container内で使う限り、プロジェクト内の .venv や node_module には、
+      # ボリュームを使う必要はない。(しかし、ホスト側からは動かないので注意）
+      # スピードが遅いと思ったら、その時にボリュームを導入考える。
       - ../:/workspaces/cc-dev-container
 
       # Claude Code の状態 (auth, settings, plugins, sessions, history) を永続化。
-      # Anthropic 公式 dev container と同じスコープ。
       # CLAUDE_CONFIG_DIR=/home/node/.claude を environment で設定しているため、
       # ~/.claude.json (OAuth トークン等) もこの配下に集約され、ボリューム内に乗る。
       - claude-state:/home/node/.claude
@@ -32,10 +32,16 @@ services:
       # named volume なのでコンテナを rebuild しても履歴が消えない、というわずかな使い勝手のメリット。
       - claude-bashhistory:/commandhistory
 
+      # node:22-trixie にはデフォルトで bash が入っているが、zsh を使うためにわざわざこれを作る。
+      # zsh を使わないといけない理由は特にないが、このプロジェクトでは zsh を使うことにしている。
       # ホスト上の ./.zshrc を /home/node/.zshrc として見せる bind mount。
       # VS Code のターミナル(zsh)が起動時にこの $HOME/.zshrc を読み込む。
       - ./.zshrc:/home/node/.zshrc
 
 volumes:
+  # これらのボリューム名は内部的には、
+  # cc-dev-container_devcontainer_claude-bashhistory と、
+  # cc-dev-container_devcontainer_claude-state のようになっている。つまり先頭にフォルダ名がつく。
+  # 別の階層で同じフォルダ名のプロジェクトを作ると、競合してしまうので注意。
   claude-state:
   claude-bashhistory:

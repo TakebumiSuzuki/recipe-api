@@ -63,7 +63,7 @@ flowchart TB
     end
 
     localext -->|"Server本体をコピー→<br/>docker execで起動"| server
-    renderer <-->|"docker exec<br/>(操作のたびに都度電話)"| server
+    renderer <-->|"docker exec"| server
 ```
 
 ## 表:何が変わるか
@@ -79,7 +79,7 @@ flowchart TB
 
 ## 補足:docker execとユーザー
 
-- VS Code Serverの初回起動も、起動後の通信（ターミナルを開く・タスク実行など）も、実体はすべて`docker exec`。**接続確立後に別経路へ切り替わるわけではなく**、操作のたびに新しい`docker exec`が実行され続ける。
+- VS Code Serverの初回起動も、起動後の通信も、実体はすべて`docker exec`。ターミナルを開く・タスクを実行するといった操作のたびに、毎回新しい`docker exec`プロセスが起動されるかどうかは、**未検証（推測）**。
 - `docker exec`で動くプロセス（VS Code Server本体・ターミナル・タスク・デバッグ）の実行ユーザーは`remoteUser`で決まる。本プロジェクトでは`remoteUser: "node"`（`.devcontainer/devcontainer.json`）が明示されているため、これらはすべて`node`ユーザーで動く。
 
 ## まとめ
