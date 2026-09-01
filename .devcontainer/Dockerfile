@@ -40,6 +40,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     nano \
     bubblewrap \
     socat \
+    postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 # uvが管理するPython本体を /opt/uv-python にインストール。

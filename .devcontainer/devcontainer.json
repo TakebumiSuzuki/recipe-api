@@ -4,9 +4,9 @@
 //   2. そこへ VS Code Server を送り込んで remoteUser の権限で起動し、
 //   3. workspaceFolder を開き、postCreateCommand と customizations を適用する。
 {
-  "name": "TEMPLATE-PROJECT",
+  "name": "recipe-api-devcontainer",
   "dockerComposeFile": "docker-compose.yml",
-  "service": "claude-code",
+  "service": "backend",
   "workspaceFolder": "/workspaces/cc-dev-container",
   // remoteUser: コンテナ内で「VS Code Server」本体（およびそこから生まれる子プロセスの
   // ターミナル・言語サーバーなど）をどのユーザー権限で動かすかを指定する設定。

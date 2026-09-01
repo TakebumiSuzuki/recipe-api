@@ -1,5 +1,5 @@
 services:
-  claude-code:
+  backend:
     build:
       context: .
     # VS Code がアタッチするためコンテナを生かし続ける
@@ -37,6 +37,24 @@ services:
       # ホスト上の ./.zshrc を /home/node/.zshrc として見せる bind mount。
       # VS Code のターミナル(zsh)が起動時にこの $HOME/.zshrc を読み込む。
       - ./.zshrc:/home/node/.zshrc
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:18-trixie
+    env_file:
+      - .env
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+
 
 volumes:
   # これらのボリューム名は内部的には、
@@ -45,3 +63,4 @@ volumes:
   # 別の階層で同じフォルダ名のプロジェクトを作ると、競合してしまうので注意。
   claude-state:
   claude-bashhistory:
+  postgres-data:
