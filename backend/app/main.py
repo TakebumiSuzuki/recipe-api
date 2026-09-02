@@ -1,9 +1,10 @@
 from typing import Annotated
 
-from app.deps import get_db_session
 from fastapi import Depends, FastAPI
 from sqlalchemy import text
 from sqlalchemy.orm import Session
+
+from app.deps import get_db_session
 
 app = FastAPI()
 
