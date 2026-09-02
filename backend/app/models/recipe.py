@@ -15,7 +15,7 @@ from sqlalchemy import (
 )
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 if TYPE_CHECKING:
     from app.models.user import User
@@ -31,7 +31,7 @@ class Recipe(Base):
     __tablename__ = "recipes"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped["User"] = mapped_column(ForeignKey("users.id"))
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     title: Mapped[str] = mapped_column(String(100))
     description: Mapped[str | None] = mapped_column(String(5000))
     servings: Mapped[int]
@@ -48,8 +48,10 @@ class Recipe(Base):
     )
     is_published: Mapped[bool] = mapped_column(server_default=text("false"))
     published_on: Mapped[date] = mapped_column(Date())
-    source: Mapped[dict | None] = mapped_column(JSONB(), index=True)
+    source: Mapped[dict | None] = mapped_column(JSONB())
     created_at: Mapped[datetime] = mapped_column(DateTime())
+
+    user: Mapped["User"] = relationship(back_populates="recipes", )
 
     __table_args__ = (
         UniqueConstraint("user_id", "title"),
