@@ -57,10 +57,17 @@ services:
 
 
 volumes:
-  # これらのボリューム名は内部的には、
+  # 以下で指定しているボリューム名は内部的には、
   # cc-dev-container_devcontainer_claude-bashhistory と、
-  # cc-dev-container_devcontainer_claude-state のようになっている。つまり先頭にフォルダ名がつく。
-  # 別の階層で同じフォルダ名のプロジェクトを作ると、競合してしまうので注意。
+  # cc-dev-container_devcontainer_claude-state のように命名される。
+  # つまり、先頭に「フォルダ名_devcontainer」がつく。
+  # cc-dev-container の部分は、Mac(ホスト)側のプロジェクトのフォルダ名。
+  # よって、別の場所で同じフォルダ名のプロジェクトを作ると、競合してしまうので注意。
+  # ただし、この様に接頭辞がつく仕組みは、Dev Containers が開いた場合の名前。
+  # Dev Contaners 拡張が docker compose 起動時にフラグで接頭辞を入れる仕組み。
+  # もし、自分で `cd .devcontainer && docker compose up` した場合は接頭辞が
+  # devcontainer_ だけになり、別のボリュームになる（認証も履歴も引き継がれない）。
+  # 詳細は docs/docker-volume-naming.md を参照。
   claude-state:
   claude-bashhistory:
   postgres-data:

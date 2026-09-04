@@ -20,11 +20,7 @@
 └─────────────────────────────────────────────────────┘
 ```
 
-レストランで例えると、`ondelete` は「**厨房のルール**（このお皿が下がったら、付け合わせも一緒に下げる）」。
-`cascade` / `passive_deletes` は「**ホールスタッフへの指示**（君が運ぶのか、厨房に任せるのか）」。
-
-この2つが食い違うと、二度手間になったり、誰も片付けずに皿が残ったりする。
-だから **`ondelete` の値を決めたら、それに合わせて ORM 側もセットで決める**必要がある。
+**`ondelete` の値を決めたら、それに合わせて ORM 側もセットで決める**必要がある。
 後半の「場合分け」がこのノートの本題。
 
 ---
@@ -35,29 +31,9 @@
 user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
 ```
 
-### `Mapped[X]` の X は「そのカラムに入る値の型」
-
-よくある間違いが `Mapped["User"]` と書いてしまうこと。
-
-```python
-user_id: Mapped["User"] = mapped_column(ForeignKey("users.id"))   # ✗
-user_id: Mapped[int]    = mapped_column(ForeignKey("users.id"))   # ○
-```
-
-`user_id` に入るのは `users.id` の**整数**であって、User オブジェクトではない。
-`Mapped["User"]` を書く場所は次節の `relationship()` のほう。
-
-`User` を `if TYPE_CHECKING:` の中でだけ import している場合、実行時に名前が解決できず
-インポート時点で落ちる（実測）。
-
-```
-sqlalchemy.orm.exc.MappedAnnotationError: Could not resolve all types within
-mapped annotation: "Mapped[ForwardRef('User')]".
-```
-
 ### カラムの型は「参照先の列」から決まる。注釈は使われない
 
-これは知らないと混乱する。**`ForeignKey` を付けた列の型は、注釈ではなく参照先の列からコピーされる。**
+**`ForeignKey` を付けた列の型は、注釈ではなく参照先の列からコピーされる。**
 
 ```python
 user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))   # 注釈は str
@@ -67,19 +43,10 @@ user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))   # 注釈は str
 |---|---|
 | 生成された型 | `INTEGER` ← 参照先 `users.id` の型。`str` は無視された |
 
-先ほどの `Mapped["User"]` がインポート時まで気付かれにくいのも同じ理由で、
-型を決めるのに注釈を見ていないから。
 
 注釈が効くのは **NULL 許容かどうか**（`Mapped[int]` → NOT NULL、`Mapped[int | None]` → NULL可）と、
 mypy / pyright などの型チェッカー向けの情報としてだけ。
 
-参照先のテーブルがまだ存在しないと型が決まらず、`NullType` のままになる。
-テーブル作成時にこう落ちる（実測）。
-
-```
-sqlalchemy.exc.CompileError: (in table 'recipes', column 'user_id'):
-Can't generate DDL for NullType(); did you forget to specify a type on this Column?
-```
 
 ### `ForeignKey` に書くのは「テーブル名.カラム名」
 
@@ -89,10 +56,6 @@ Can't generate DDL for NullType(); did you forget to specify a type on this Colu
 ForeignKey("users.id")   # ○ __tablename__ = "users"
 ForeignKey("User.id")    # ✗ クラス名。上と同じ CompileError になる
 ```
-
-文字列で書いてあるので、**参照先クラスがまだ定義されていなくても構わない**。
-解決はテーブル作成時などに後回しされる。
-`Recipe` を先に書いて `User` を後に書いても問題ない。
 
 ---
 
@@ -111,59 +74,86 @@ recipes: Mapped[list["Recipe"]] = relationship(back_populates="user")
 SQLAlchemy 2.0 では `Mapped["User"]` という注釈から相手クラスを推論する。
 書いても動くが（`relationship("User", ...)`）、同じことを2回言っているだけ。
 
-### `back_populates` は「相手側の属性名」だけ
+### `back_populates` の存在意義（なぜ双方向で書くのか？）
 
-クラス名を付けてはいけない。相手が誰かは注釈で既に確定しているので、属性名だけを答える欄。
+> **DB（SQL）を介さず、Python のメモリ上（セッション内）で片方のリレーション属性を変更した際に、もう片方にも即座に自動反映させて整合性を保つための仕組み。**
 
-実測（4パターン）:
-
-```
-[OK]   relationship(back_populates="recipes")            ← 第一引数なし
-[OK]   relationship("User", back_populates="recipes")    ← 冗長だが動く
-[FAIL] relationship("User", back_populates="User.recipes")
-       InvalidRequestError: Mapper 'Mapper[User(users)]' has no property 'User.recipes'.
-[FAIL] relationship("User.recipes", back_populates="recipes")
-       InvalidRequestError: Property 'recipes' is not an instance of ColumnProperty.
-```
-
-### `relationship` はカラムを作らない
-
-`relationship` は「Python 側から辿るための道」でしかなく、DDL には一切出ない。
-DB 側の紐付けを作っているのは `ForeignKey` のほう。片方だけでも動くが、
-`ForeignKey` だけだと `recipe.user` で辿れず、`relationship` だけだと DB に制約がない。
+* **これがないとどうなるか？**
+  `recipe.user = user` と代入しても、DB にコミットするまでは `user.recipes` のリストは空（`[]`）のままになり、メモリ上でオブジェクト同士の不整合が起きます。
+* **なぜたすき掛けで書くのか？**
+  片方が変更されたとき、相手側クラスの「どのプロパティ名（`user` なのか `recipes` なのか）」を連動して更新すればよいかを互いに教え合う必要があるためです。
 
 ---
 
-## 3. `ondelete` の値ごとの場合分け ← 本題
+## 3. `ondelete` に書ける値（DB 側の設定）
 
-`ondelete` に渡せる文字列は SQLAlchemy が検証しており、次のいずれかでなければならない。
+`ondelete` に渡せる文字列は、次のいずれかでなければならない。
 
 ```
 RESTRICT | CASCADE | SET NULL | SET DEFAULT | NO ACTION
 ```
 
-スペルを間違えると DDL を組み立てる時点で落ちる（実測）。
+この5つの選択肢は、**SQL標準規格（ANSI SQL）の外部キー定義（`ON DELETE ...`）と1対1で対応**しています（SQLAlchemy独自のものではなく、DB自体の機能）。
 
-```python
-ForeignKey("users.id", ondelete="SETNULL")   # ✗ スペースがない
-```
-```
-sqlalchemy.exc.CompileError: Unexpected SQL phrase: 'SETNULL'
-(matching against '^(?:RESTRICT|CASCADE|SET (?:NULL|DEFAULT)(?:\s*\(.+\))?|NO ACTION)$')
-```
+### 重要な前提：外部キーは「一方向」かつ「必ず親子」になる
 
-以下、実務で使う3ケースを見ていく。
-実測はすべて PostgreSQL 18.6 に対して
-「User 1件（レシピ3件持ち）を `session.delete()` して commit」したときのもの。
-ログ中の `%(id)s` は psycopg（PostgreSQL ドライバ）が使うプレースホルダ表記で、
-実行時に実際の値が入る。読むときは `?` と同じものだと思ってよい。
+* **連動動作は「親 → 子」の一方向のみ**
+  * 外部キーは子側の列に貼るため、親が消えたときの連動（`CASCADE` 等）は機能しますが、**子を消しても親には何の影響もありません**。
+* **1対1 関係であっても完全に対等な関係は存在しない**
+  * RDBの構造上、1対1 も「子テーブルの外部キーに `UNIQUE` 制約をつけたもの」に過ぎず、必ずどちらかが親（参照される側）、どちらかが子（外部キーを持つ側）という主従関係になります。
+  * そのため、例えば `Profile` に `User` の外部キーを貼った場合、`Profile` を削除しても `User` が連動して消えるようなDB制約は作れません。
+
+`ondelete` は **DB 側だけ**の設定。これに ORM 側の設定を合わせないと噛み合わないので、
+以下に ORM 側の2つの引数を説明してから、組み合わせの正解をまとめる。
 
 ---
 
-### ケース A：`ondelete` を書かない（＝ `NO ACTION`）
+## 4. ORM 側の2つの引数
 
-「ユーザーを消したいなら、先にレシピを片付けてこい」という一番厳しい設定。
-DB のデフォルトなので、何も書かなければこれになる。
+どちらも「1」側（`User.recipes`）の `relationship()` に書く。
+
+### `cascade` — 子オブジェクトを「どうする」か
+
+`session.delete(user)` を呼んだとき、SQLAlchemy はその User にぶら下がっている
+レシピをどう扱うかを決めなければならない。それを指示するのが `cascade`。
+
+| `cascade` の値 | 親を削除したとき、子に対して ORM がやること |
+|---|---|
+| **書かない**（＝既定 `"save-update, merge"`） | 子の `user_id` を **NULL にする** |
+| `"all, delete-orphan"` | 子を **削除する** |
+
+引っかかりやすいのは、**書かないときの既定動作が「何もしない」ではなく「NULL にする」**こと。
+「指定しない＝放置」ではないので、`NOT NULL` の列だとここでぶつかる。
+
+`"all"` は `save-update, merge, refresh-expire, expunge, delete` の略で、
+`delete-orphan` は含まれない。だから2つ並べて `"all, delete-orphan"` と書く。
+`delete-orphan` は「親から切り離された子は、単独では存在価値がないので削除する」という意味。
+
+### `passive_deletes` — その後始末を「誰がやる」か
+
+`cascade` で決めた作業を、ORM が自分で実行するか、DB の `ondelete` に任せて
+何もしないかのスイッチ。
+
+| 値 | ORM の動き |
+|---|---|
+| `False`（既定） | 子を全件読み込み、1件ずつ UPDATE / DELETE を発行する |
+| `True` | 何もしない。親を DELETE するだけで、子は DB が処理する |
+
+レシピが1000件あれば、`False` は約1000本のクエリ、`True` は1本で済む。
+つまり **`passive_deletes` は速さの設定であって、正しさの設定ではない。**
+
+ただし `True` は「DB が必ずやってくれる」という前提の宣言なので、
+`ondelete` を書いていない列に `True` を付けると、ORM も DB も誰も後始末をせず、
+外部キー違反で失敗する。**`True` は `ondelete` とセットのときだけ**。
+
+---
+
+## 5. `ondelete` の値ごとの組み合わせ
+
+### A. `ondelete` を書かない（＝ `NO ACTION`）
+
+**方針：レシピが1件でも残っていれば、その User は削除させない。**
+会計データや監査ログのように、消えると困るものを守るときに選ぶ。
 
 ```python
 # recipe.py
@@ -174,56 +164,30 @@ user: Mapped["User"] = relationship(back_populates="recipes")
 recipes: Mapped[list["Recipe"]] = relationship(back_populates="user")
 ```
 
-| 設定項目 | 値 |
-|---|---|
-| `cascade` | 書かない（デフォルト `"save-update, merge"`） |
-| `passive_deletes` | **書かない**（必ず `False` のまま） |
-| `user_id` の型 | `Mapped[int]` |
+| 引数 | 値 | 理由 |
+|---|---|---|
+| `cascade` | 書かない | 子に手を出させないため |
+| `passive_deletes` | 書かない | 任せる相手（`ondelete`）がいない |
+| `user_id` の型 | `Mapped[int]` | NULL にする場面がない |
 
-生成される DDL:
-```sql
-user_id INTEGER NOT NULL,
-FOREIGN KEY(user_id) REFERENCES users (id)
-```
+User を削除しようとすると、レシピが残っている限りエラーになる。
+アプリ側は「先にレシピを削除 or 移管してから User を削除する」手順を自分で書く。
 
-レシピが残ったまま User を消そうとすると弾かれる。
-ただし**消し方によって、どこで弾かれるかが変わる**（実測）。
+同じ挙動を明示したいなら `ondelete="RESTRICT"` と書いてもよい。
+`NO ACTION` との差は、制約を `DEFERRABLE` にしたときチェックを
+トランザクション終了まで遅らせられるかどうかだけ（`NO ACTION` は遅らせられる）。
+遅延制約を使わないなら同じものと思ってよい。
 
-素の `DELETE` 文やバルク削除（後述）だと、DB の外部キー制約が弾く。
-
-```
-IntegrityError: (psycopg.errors.ForeignKeyViolation)
-update or delete on table "users" violates foreign key constraint
-"recipes_user_id_fkey" on table "recipes"
-DETAIL:  Key (id)=(1) is still referenced from table "recipes".
-```
-
-`session.delete()` だと、DB に届く手前で ORM が先に落ちる。
-デフォルトの `cascade` は「親が消えたら子の FK を NULL にする」動きをするため、
-`NOT NULL` 列とぶつかるほうが先に来る。
-
-```
-IntegrityError: (psycopg.errors.NotNullViolation)
-null value in column "user_id" of relation "recipes" violates not-null constraint
-DETAIL:  Failing row contains (1, null).
-[SQL: UPDATE recipes SET user_id=%(user_id)s::INTEGER WHERE recipes.id = ...]
-```
-
-メッセージは違うが、どちらも「レシピが残っているので User は消せない」という同じ結論。
-
-「レシピは絶対に道連れで消したくない。消すなら明示的にやれ」という方針のときに選ぶ。
-アプリ側は「先にレシピを削除 or 移管してから User を削除する」手続きを自分で書くことになる。
-
-> `RESTRICT` と `NO ACTION` はほぼ同じだが、`NO ACTION` は制約が `DEFERRABLE` のとき
-> チェックをトランザクション終了まで遅らせられ、`RESTRICT` は必ず即座にチェックする、という差がある。
-> （PostgreSQL のドキュメント準拠。本ノートでは未実測）
-> 遅延制約を使わないなら実質同じなので、明示したいときは読んで分かりやすい `RESTRICT` を書けばよい。
+**やってはいけない：`cascade="all, delete-orphan"` を付ける。**
+守るための設定なのに、ORM がレシピを先に全部消してから User を消してしまい、
+DB の防御をすり抜ける。
 
 ---
 
-### ケース B：`ondelete="CASCADE"`（親と一緒に子も消す）
+### B. `ondelete="CASCADE"`
 
-「ユーザーが退会したら、そのレシピも全部消える」方針。
+**方針：User が消えたら、そのレシピも一緒に消す。**
+下書きや通知のように、持ち主がいなくなれば無意味になるものに選ぶ。
 
 ```python
 # recipe.py
@@ -240,85 +204,62 @@ recipes: Mapped[list["Recipe"]] = relationship(
 )
 ```
 
-| 設定項目 | 値 |
-|---|---|
-| `cascade` | `"all, delete-orphan"` |
-| `passive_deletes` | `True`（推奨。無くても結果は同じ） |
-| `user_id` の型 | `Mapped[int]`（NOT NULL のまま） |
+| 引数 | 値 | 役割と理由 |
+|---|---|---|
+| `cascade` | `"all, delete-orphan"`（**必須**） | 親が消えたら子も道連れで消すと ORM に教える。書かないと子が NOT NULL 違反で爆死する |
+| `passive_deletes` | `True`（推奨） | メモリにいない子をわざわざ SELECT して消しに行かず、DB の `ON DELETE CASCADE` に丸投げする（高速化） |
+| `user_id` の型 | `Mapped[int]` | レシピは親と一緒に消えるため、`user_id` が NULL になることはない |
 
-生成される DDL:
+#### なぜ `cascade="all, delete-orphan"` が必須なのか？
+
+もし `cascade` を指定しない（デフォルトの）まま `session.delete(user)` すると、SQLAlchemy は親切心のつもりで次のように動きます。
+
+> 「親（User）を消せと言われたが、子（Recipe）まで消せとは言われていないな。
+> 親を消す前に、親子の縁を切るために**子の作成者欄（`user_id`）を `NULL` に更新**して他人にしてあげよう！」
+
+その結果、**User を DELETE する直前に、レシピの FK を NULL にする UPDATE 文** が先に飛んでしまいます。
+
 ```sql
-user_id INTEGER NOT NULL,
-FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE
+-- 1. 親を消す準備として、子の外部キーを NULL に書き換えようとする（ここで落ちる！）
+UPDATE recipes SET user_id = NULL WHERE recipes.id = 1;
+
+-- 2. （この User DELETE は発行すらされずに終わる）
+DELETE FROM users WHERE id = 99;
 ```
 
-#### `passive_deletes` が効く場所（実測）
+※ `recipes.id = 1` はユーザーIDではなく、更新対象となる**レシピ自身の主キー（レコードID）**です。
 
-```
-=== passive_deletes なし ===
-    SELECT ... FROM users   WHERE users.id = %(pk_1)s
-    SELECT ... FROM recipes WHERE %(param_1)s = recipes.user_id  ← 子を全部読み込んで
-    DELETE FROM recipes WHERE recipes.id = %(id)s                ← 1件ずつ消す
-    DELETE FROM users   WHERE users.id = %(id)s
+しかし、`user_id: Mapped[int]` には `NOT NULL` 制約が付いています。
+DB は「NULL 禁止のカラムに NULL なんて入るか！」と怒り、**`IntegrityError`（NOT NULL 制約違反）で即座にクラッシュ（ロールバック）**します。
 
-=== passive_deletes=True ===
-    SELECT ... FROM users   WHERE users.id = %(pk_1)s
-    DELETE FROM users   WHERE users.id = %(id)s                  ← これだけ。あとは DB 任せ
-```
+`cascade="all, delete-orphan"` を明示することで、ORM は「子も道連れで消すんだな」と正しく認識し、危険な UPDATE ではなく安全な DELETE を計画するようになります。
 
-結果はどちらもレシピが全部消えて同じ。違いは発行されるクエリ数。
-`passive_deletes=True` は「DB の `ON DELETE CASCADE` を信用するから、Python 側は手を出すな」
-という宣言で、レシピが1000件あれば DELETE が1000本から1本になる。
+#### やってはいけない：`cascade` を書かずに `passive_deletes=True` だけで済ませる
 
-**つまり `passive_deletes` は「正しさ」ではなく「速さ」の設定。**
-このケースで正しさを握っているのは次の `cascade` のほうで、
-`passive_deletes` を書き忘れても結果は正しい（遅いだけ）。
+「`passive_deletes=True` だけ付けておけばエラーにならず動いたよ？」と思うかもしれませんが、これは**たまたま動いているだけの時限爆弾**です。
 
-#### `cascade="all, delete-orphan"` が必要な理由
+* **メモリにレシピがない場合（偶然成功する）**:
+  `session.get(User, 1)` して即 `session.delete(user)` した場合、メモリ上にレシピがありません。ORM は「子レコードは DB に任せよう」とスルーするため、`DELETE FROM users` のみ発行され、DB の `ON DELETE CASCADE` でレシピも一緒に消えて成功してしまいます。
+* **メモリにレシピがある場合（突然 500 エラーで爆死する）**:
+  同じ削除処理でも、直前で `user.recipes` を参照するなどしてメモリに読み込んでいた場合、ORM は「メモリ上にレシピがある！ 親が消えるから `user_id` を NULL にしなきゃ！」と走り出します。そして上の `UPDATE recipes SET user_id = NULL ...` を発行して **NOT NULL 違反でクラッシュ** します。
 
-`passive_deletes=True` は「DB 経由で消えるとき」の話。
-それとは別に、**セッションに読み込み済みのレシピオブジェクトの後始末**を ORM に教える必要がある。
-デフォルト（`"save-update, merge"`）のままだと、ORM は「親が消えたら子の `user_id` を NULL にする」
-という動きをしようとして、`NOT NULL` 列とぶつかる。
+「直前にレシピ一覧を参照していたかどうか」だけで成功したり落ちたりする最悪の潜伏バグになるため、**必ず `cascade="all, delete-orphan"` をセットで明記**します。
 
-`delete-orphan` は「親から切り離された子は、それ自体が存在価値を失うので削除する」という意味。
-レシピは投稿者なしでは成立しない、という設計に一致する。
+#### なぜ `passive_deletes=True` を付けるのか？
 
-`ondelete="CASCADE"` のまま4通り試した結果（実測）。壊れるのは1行目だけ。
-
-| `cascade` | `passive_deletes` | ORM が発行した文 | 残ったレシピ |
-|---|---|---|---|
-| デフォルト | `False` | **NotNullViolation** | — |
-| デフォルト | `True` | `DELETE FROM users` | `[]` |
-| `"all, delete-orphan"` | `False` | `DELETE FROM recipes` / `DELETE FROM users` | `[]` |
-| `"all, delete-orphan"` | `True` | `DELETE FROM users` | `[]` |
-
-2行目が通っているのは、ORM が何もせず DB の `ON DELETE CASCADE` だけで片付いているため。
-ただしこの書き方は「セッションに読み込み済みのレシピ」の状態が ORM 側に残るので、
-`cascade="all, delete-orphan"` を書いた3・4行目のほうが素直。
-
-#### 罠：`ondelete` を付けずに `passive_deletes=True` だけ書く
-
-これをやると、**ORM も消さない、DB も消さない**という空白ができて壊れる（実測）。
-
-```
-ondelete なし + passive_deletes=True
-  -> IntegrityError: (psycopg.errors.ForeignKeyViolation)
-     update or delete on table "users" violates foreign key constraint
-     "recipes_user_id_fkey" on table "recipes"
-```
-
-`passive_deletes=True` は必ず `ondelete="CASCADE"` とセットで書く。
+`passive_deletes=False`（デフォルト）だと、メモリにレシピがなくても、SQLAlchemy は「親を消すから子を全部拾い集めなきゃ！」と `SELECT * FROM recipes WHERE user_id = ...` を発行し、子を1件ずつ DELETE しようとします。
+DB 側に `ON DELETE CASCADE` があるなら、これは完全な二度手間です。`passive_deletes=True` にすることで、無駄な SELECT や個別 DELETE を省き、親の DELETE 1本で DB に一括処理させることができます。
 
 ---
 
-### ケース C：`ondelete="SET NULL"`（親は消すが子は残す）
+### C. `ondelete="SET NULL"`
 
-「ユーザーが退会してもレシピは残す。投稿者欄だけ空になる」方針。
+**方針：User が消えてもレシピは残す。投稿者欄だけ空（退会済みユーザー）にする。**
+投稿やレビューのように、書き手がいなくなってもコンテンツ自体に価値が残るものに選ぶ。
 
 ```python
 # recipe.py
-user_id: Mapped[int | None] = mapped_column(     # ← None を許す型にする
+user_id: Mapped[int | None] = mapped_column(          # ← None を許す型（必須！）
     ForeignKey("users.id", ondelete="SET NULL")
 )
 user: Mapped["User | None"] = relationship(back_populates="recipes")
@@ -326,145 +267,184 @@ user: Mapped["User | None"] = relationship(back_populates="recipes")
 # user.py
 recipes: Mapped[list["Recipe"]] = relationship(
     back_populates="user",
-    passive_deletes=True,        # cascade は書かない
+    passive_deletes=True,                            # cascade は「書かない」
 )
 ```
 
-| 設定項目 | 値 |
-|---|---|
-| `cascade` | **書かない**（デフォルトのまま） |
-| `passive_deletes` | `True`（推奨。無くても結果は正しい） |
-| `user_id` の型 | **`Mapped[int \| None]`（必須）** |
+| 引数 | 値 | 役割と理由 |
+|---|---|---|
+| `user_id` の型 | `Mapped[int \| None]`（**必須**） | DB が作成者欄に NULL を入れるため、カラムを NULL 許容にしておく必要がある |
+| `cascade` | **書かない**（必須） | 既定動作（FK を NULL にして縁を切る）が SET NULL の目的と一致する。delete させてはいけない |
+| `passive_deletes` | `True`（推奨） | ORM が 1件ずつ UPDATE 文を打つのをやめ、DB の `ON DELETE SET NULL` に 1本で丸投げする（高速化） |
 
-生成される DDL:
-```sql
-user_id INTEGER,                                              ← NOT NULL が外れている
-FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE SET NULL
-```
+#### セッション側と DB 側で何が起こるのか？
 
-`SET NULL` する以上、その列が NULL を受け付けなければ意味がない。
-`Mapped[int]` のままだと `NOT NULL` 列に NULL を入れようとして失敗する。
+`session.delete(user)` して `commit()` すると、DB の `ON DELETE SET NULL` により次のように動きます。
 
-#### `passive_deletes` を書かないとどうなるか（実測）
+* **メモリにレシピがない場合（推奨の高速ルート）**:
+  `passive_deletes=True` があるため、ORM はレシピに触りません。
+  ```sql
+  DELETE FROM users WHERE id = 99;
+  ```
+  このクエリ 1 本が DB に飛び、**DB 側が自動的に** 該当するレシピの `user_id` を `NULL` に書き換えてくれます。レシピの行自体は消えずに残ります。
+* **メモリにレシピがある場合**:
+  ORM がメモリ内の Recipe オブジェクトの `user_id` を `None` に更新し、DB に対しても `UPDATE recipes SET user_id = NULL WHERE recipes.id = 1` を送って整合性を取ります。
 
-```
-=== passive_deletes なし ===
-    SELECT ... FROM recipes WHERE %(param_1)s = recipes.user_id       ← 子を全部読み込んで
-    UPDATE recipes SET user_id=%(user_id)s WHERE recipes.id = %(id)s  ← 1件ずつ NULL に
-    DELETE FROM users WHERE users.id = %(id)s
-    残ったレシピ: [(1, None), (2, None), (3, None)]
+#### やってはいけない ①：`cascade="all, delete-orphan"` を付けてしまう
 
-=== passive_deletes=True ===
-    DELETE FROM users WHERE users.id = %(id)s                         ← これだけ
-    残ったレシピ: [(1, None), (2, None), (3, None)]
-```
+「とりあえずいつも通り全部書いておこう」と `cascade` を付けてしまうと**大惨事**になります。
 
-最終結果は同じ。ケース B と同じく、ここでも `passive_deletes` は速さの設定でしかない。
-`False`（既定）のときに ORM が出すのは `DELETE` ではなく **`UPDATE ... SET user_id = NULL`**。
-`cascade` に `delete` 系が含まれていないと、ORM は「子を消す」のではなく
-「子の FK を NULL にする」動きをするため、DB の `SET NULL` と結果が一致する。
-それでもクエリ数が減るので、付けたほうがよい。
+* **何が起きるか**:
+  「ユーザーが退会してもレシピは残す」方針のはずなのに、ORM は「親が消えたから子も道連れで消すんだな！」と解釈します。
+* **実際の結果**:
+  もしメモリ上にレシピが読み込まれていると、ORM が User を消す前に **`DELETE FROM recipes WHERE id = ...` を先に発行してレシピを根こそぎ抹殺** してしまい、意図と真逆の結果になります。
 
-#### 罠：`delete-orphan` を付けると意図が真逆になる
+「子を残したい」なら、**`cascade` は絶対に書いてはいけません（既定値のままにする）**。
 
-```
-cascade="all, delete-orphan" を付けた場合（実測）
-    DELETE FROM recipes WHERE recipes.id = %(id)s
-    DELETE FROM users   WHERE users.id = %(id)s
-    残ったレシピ: []          ← レシピが消えた
-```
+#### やってはいけない ②：`user_id` を `Mapped[int]`（NOT NULL）のままにする
 
-「レシピを残す」ための `SET NULL` なのに、ORM が先回りして全部消してしまう。
-ケース C では `cascade` は**指定しない**。
+カラム定義側で `Mapped[int | None]` にし忘れて `Mapped[int]` のままにした場合です。
+
+* **何が起きるか**:
+  `DELETE FROM users WHERE id = 99` が DB に届いた瞬間、DB の `ON DELETE SET NULL` が発動して `recipes.user_id` に `NULL` を入れようとします。
+* **実際の結果**:
+  DB 自体が「`recipes.user_id` には NOT NULL 制約があるから NULL は入れられない！」とエラーを吐き、**`IntegrityError` で削除に失敗（ロールバック）** します。
+  SET NULL を使うなら、カラム型は必ず `int | None` でなければなりません。
 
 ---
 
-## 早見表
+## 6. まとめ
 
-| | A. 無指定 / `RESTRICT` | B. `CASCADE` | C. `SET NULL` |
+### 使う組み合わせ
+
+| | A. 書かない | B. `CASCADE` | C. `SET NULL` |
 |---|---|---|---|
 | 方針 | 子が残っていれば親を消せない | 親と一緒に子も消す | 親を消して子は残す |
 | `user_id` の型 | `Mapped[int]` | `Mapped[int]` | `Mapped[int \| None]` |
-| `cascade` | 書かない | **`"all, delete-orphan"`（必須）** | **書かない（必須）** |
-| `passive_deletes` | 書かない | `True` 推奨（速さのみ） | `True` 推奨（速さのみ） |
+| `cascade` | 書かない | `"all, delete-orphan"` | 書かない |
+| `passive_deletes` | 書かない | `True` | `True` |
 | 退会後のレシピ | そもそも退会できない | 消える | 残る（投稿者不明） |
-| 典型例 | 会計データ、監査ログ | ユーザーの下書き、通知 | 投稿、レビュー |
+| 典型例 | 会計データ、監査ログ | 下書き、通知 | 投稿、レビュー |
+
+### 使ってはいけない組み合わせ
+
+| `ondelete` | 悪い設定 | 何が起きるか |
+|---|---|---|
+| 書かない | `cascade="all, delete-orphan"` | 守るはずの子を ORM が先に消してしまう |
+| 書かない | `passive_deletes=True` | ORM も DB も後始末をせず、外部キー違反 |
+| `CASCADE` | `cascade` を書かない | ORM が `user_id` を NULL にしようとして `NOT NULL` 違反 |
+| `CASCADE` | `user_id` が `Mapped[int \| None]` | 消えるだけの列に NULL を許すことになり、無意味 |
+| `SET NULL` | `cascade="all, delete-orphan"` / `"all"` | 残すはずの子が消える（意図と真逆） |
+| `SET NULL` | `user_id` が `Mapped[int]` | NULL を入れられず `NOT NULL` 違反 |
+
+### 覚え方
+
+```
+ondelete        … DB に「親が消えたら子をどうしろ」と命じる      ← 正しさの担当
+cascade         … ORM に「親が消えたら子をどうしろ」と命じる      ← 正しさの担当
+passive_deletes … その作業を ORM がやるか DB に任せるか            ← 速さの担当
+```
+
+`ondelete` と `cascade` は**同じことを2箇所に言う**設定なので、必ず内容を揃える。
+揃っていないと、どちらかが先に動いて意図と違う結果になる。
+`passive_deletes` はそのうえで「二度手間をやめる」ためのスイッチ。
 
 ---
 
-## 知らないとハマる点
+## 付録：そもそも `cascade` とは何なのか？
 
-### バルク削除では ORM の `cascade` が効かない
+### 1. `cascade` は「delete のためだけ」ではない
 
-`session.delete(obj)` と `session.execute(delete(User))` は別物。
-後者は SQL を直接投げるので、**ORM の `cascade` は一切通らない**（実測）。
+よくある誤解として「`cascade` は親を削除したときの設定」と思われがちですが、**そもそも論として、`cascade` は delete 専用ではありません**。
 
-```
-ondelete なし + cascade="all, delete-orphan"
-   session.delete()  -> 残ったレシピ: []   ← ORM が子を DELETE してから親を消した
-   バルク delete()   -> IntegrityError: (psycopg.errors.ForeignKeyViolation)
-                        Key (id)=(1) is still referenced from table "recipes".
-```
+カスケード（Cascade＝連鎖・雪崩）とは、
+**「親オブジェクトに対して行った `Session` の操作を、子オブジェクトにもそのまま連鎖（波及）させる仕組み」**
+のことです。
 
-DB 側に `ondelete="CASCADE"` があれば、バルク削除でもちゃんと子が消える。
-「ORM の設定は ORM を通ったときだけ効く。DB の設定はいつでも効く」と覚えておく。
-だから**本当にデータ整合性を守りたいなら DB 側（`ondelete`）に書く**のが原則。
+SQLAlchemy の `Session` には、`add()`、`delete()`、`merge()`、`refresh()` など様々な操作があります。
+「親に対してその操作をした時、ぶら下がっている子供たちにも同じ操作を自動でやってあげるかどうか」を決めているのが `cascade` です。
 
-### 外部キー列に索引は自動で作られない
+---
 
-主キーや UNIQUE 制約には索引が自動で付くが、**FK 側の列には付かない**（実測: DDL に `CREATE INDEX` が出ず、
-`Recipe.__table__.indexes` も空）。
+### 2. 普段私たちが恩恵を受けている「既定の cascade」
 
-```sql
-CREATE TABLE recipes (
-	id SERIAL NOT NULL,
-	user_id INTEGER NOT NULL,
-	PRIMARY KEY (id),
-	FOREIGN KEY(user_id) REFERENCES users (id)
-)
-```
+実は、何も指定しなくても `relationship()` には最初から **`cascade="save-update, merge"`** という既定値が効いています。
 
-`WHERE user_id = ...` での絞り込みや、親削除時の子スキャンが毎回フルスキャンになる。
-必要なら自分で付ける。
+そのため、わざわざ子を `session.add()` しなくても、親を `session.add()` するだけで子が一緒に保存されていました。
 
 ```python
-user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+user = User(name="Alice")
+user.recipes.append(Recipe(title="カレー"))
+
+session.add(user)  # ← user しか add していないのに…
+session.commit()   # ← DB には recipes テーブルへの INSERT もちゃんと飛ぶ！
 ```
 
-ただし `user_id` を**先頭に含む複合ユニーク制約や複合インデックスが既にある**なら、
-それが流用されるので重複して張る必要はない。
+これは **`save-update` カスケード** が「親が `add()` されたら、ぶら下がる子も自動で `session.add()` する」と裏で働いてくれていたからです。
 
-### `ondelete` は DDL にしか現れない
-
-`ondelete` は `CREATE TABLE` の文面を変えるだけの設定。
-**既に作成済みのテーブルに対して、モデルの文字列を書き換えても何も起きない。**
-反映するには制約を張り替えるマイグレーションが要る。
-モデルとDBの実態がズレたまま「設定したのに効かない」と悩むのは、この段階でよくある。
-
-### `cascade` の文字列は略記（実測）
-
-| 書いた文字列 | 展開される内容 |
-|---|---|
-| （デフォルト） | `save-update, merge` |
-| `"all"` | `save-update, merge, refresh-expire, expunge, delete` |
-| `"all, delete-orphan"` | 上記 + `delete-orphan` |
-
-`"all"` に `delete-orphan` は含まれない。だから `"all, delete-orphan"` と2つ書く定型句になる。
-また `"all"` は `delete` を含むので、**ケース C（SET NULL）で `"all"` と書くとレシピが消える**。
+一方、**既定値には `delete` が入っていません**。
+そのため、親を `session.delete(user)` しても子には delete が連鎖せず、「親子の縁を切るために外部キーを NULL にしようとする」という動きになります。
 
 ---
 
-## 間違えやすい点
+### 3. `"all, delete-orphan"` の正体を分解する
 
-- **`Mapped["User"]` を `user_id` に書かない。** そこは `Mapped[int]`。
-  `Mapped["User"]` は `relationship()` のほう。
-- **`ForeignKey` の引数はテーブル名。** `"users.id"` であって `"User.id"` ではない。
-- **`back_populates` に相手のクラス名を付けない。** 属性名だけ（`"recipes"`）。
-- **`ondelete="SETNULL"` はスペースが要る。** 正しくは `"SET NULL"`。
-- **`passive_deletes=True` を `ondelete` 無しで書かない。** 誰も後始末をしなくなる。
-- **`SET NULL` なのに `Mapped[int]` のままにしない。** `Mapped[int | None]` が必須。
-- **`SET NULL` に `delete-orphan`（や `"all"`）を付けない。** 残すはずの子が消える。
-- **注釈の型は FK 列の型を決めていない。** 型は参照先の列から来る。注釈が決めるのは NULL 可否だけ。
-- **`session.execute(delete(...))` に ORM の `cascade` は効かない。** DB 側の `ondelete` だけが頼り。
-- **`passive_deletes=False` は「子を削除する」設定ではない。** ORM が能動的に後始末をするという意味で、
-  実際に何をするかは `cascade` が決める（`delete` 系を含まなければ `UPDATE ... SET NULL`）。
+`cascade="all, delete-orphan"` は、2つの要素が合体した指定です。
+
+```
+cascade = "all, delete-orphan"
+           │    │
+           │    └─ ② 孤児（orphan）の自動削除
+           └────── ① 主要なセッション操作のまとめパック
+```
+
+#### ① `"all"` とは何か？
+以下の5つのカスケード操作をひとまとめにした**ショートカット（省略記法）**です。
+
+| カスケード名 | 意味（親に対して行った操作が子に連鎖する） |
+|---|---|
+| **`save-update`** | 親を `session.add()` したら、子も自動的に `add()` する（既定で有効） |
+| **`delete`** | 親を `session.delete()` したら、子も自動的に `delete()` する |
+| **`merge`** | 親を `session.merge()` したら、子も自動的に `merge()` する（既定で有効） |
+| **`refresh-expire`**| 親を `session.refresh()` や `expire()` したら、子も連動して最新化/失効する |
+| **`expunge`** | 親をセッションから除外（`expunge`）したら、子もセッションから除外する |
+
+`"all"` を指定することで、親のライフサイクル操作がすべて子にも波及するようになります。特にここで **`delete`** が含まれるのが決定的に重要です。
+
+#### ② `"delete-orphan"` とは何か？ なぜ `"all"` と別なのか？
+`delete-orphan`（孤児の削除）は、**「親自身が削除された時」ではなく、「親のコレクションから子が外された時」に発動する**非常に強力なルールです。
+
+この違いが最も重要なポイントです：
+
+* **`delete` カスケードの発動条件**:
+  * `session.delete(user)` と、親そのものを削除した時。
+* **`delete-orphan` の発動条件**:
+  * 親は生きているが、親のリストから子が外された時（親子の縁が切れた時）。
+  ```python
+  # 親（user）は消さない。カレーのレシピだけリストから外す
+  user.recipes.remove(recipe_curry)
+  session.commit()
+  ```
+
+もし `delete-orphan` が**ない**場合：
+親自身は delete されていないので、`delete` カスケードは発動しません。
+SQLAlchemy は「親子の縁が切れたから、カレーの `user_id` を NULL にしよう（UPDATE）」とします（`NOT NULL` 列ならここでクラッシュします）。
+
+しかし `delete-orphan` を付けておくと：
+ORM は**「親から切り離された子（孤児＝orphan）は、単独で生きている意味がない。即座に殺処分（`session.delete`）せよ」**と判断し、DB に対して自動的に `DELETE FROM recipes WHERE id = ...` を発行してくれます。
+
+非常に攻撃的で影響が大きい挙動であるため、安全のため `"all"` には含まれず、明示的に `delete-orphan` と書き足す仕様になっています。
+
+---
+
+### 4. なぜ「1対多（親子関係）」では `"all, delete-orphan"` が鉄板なのか？
+
+「ユーザーと下書きレシピ」「注文と注文明細」「投稿とコメント」のような1対多の関係において、子は**「親が存在して初めて価値があるデータ」**です。
+
+| ライフサイクルの場面 | 行いたいこと | 担当するカスケード |
+|---|---|---|
+| 親を作ったとき | 親に持たせた子も一緒に DB に保存したい | `save-update`（`"all"` に内包） |
+| 親を消したとき | 親にぶら下がる子も一緒に DB から消したい | `delete`（`"all"` に内包） |
+| 親のリストから外したとき | 切り離されてゴミになった子を DB から消したい | **`delete-orphan`** |
+
+この **「親と一緒に生まれ、親と一緒に死に、親に見捨てられたら死ぬ」という一蓮托生のライフサイクル** を Python のメモリ上（ORM）で完全に表現するために、この2つをセットにした `cascade="all, delete-orphan"` が標準イディオムとして使われます。

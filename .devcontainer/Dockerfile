@@ -132,6 +132,8 @@ RUN mkdir -p /opt/ms-playwright \
 # コンテナが起動した時のメインプロセス(pid1)を実行する人
 USER node
 
+RUN curl -fsSL https://antigravity.google/cli/install.sh | bash
+
 # node ユーザーとして global にインストールを実行 (/opt/npm-global)
 # /opt にあるためシャドウイング(上書き消去)されず、所有者も node なので auto-update も可能！
 # @anthropic-ai/sandbox-runtime は Claude Code サンドボックスの seccomp フィルタを提供し、

@@ -1,8 +1,10 @@
 // このファイルは、ローカル側(Mac側)で動作している devcontainer 拡張が読み込む設定ファイル。
 // devcontainer 拡張はこの内容に従って、
-//   1. dockerComposeFile / service で指定したコンテナをビルド・起動し、
+//   1. docker CLI 経由で、dockerComposeFile / service で指定したコンテナをビルド・起動し、
 //   2. そこへ VS Code Server を送り込んで remoteUser の権限で起動し、
-//   3. workspaceFolder を開き、postCreateCommand と customizations を適用する。
+//   3. workspaceFolder を開き、postCreateCommand を実行する。
+//      customizations の拡張機能は、拡張が指示を出し、実際のダウンロード・インストールは
+//      コンテナ内で動いている VS Code Server 自身が行う。
 {
   "name": "recipe-api-devcontainer",
   "dockerComposeFile": "docker-compose.yml",
@@ -13,16 +15,17 @@
   // (省略した場合は Dockerfile の USER（未指定なら root）が使われる。)
   //
   // 1. コンテナ起動後、devcontainer拡張（ローカル側で動く拡張機能）が
-  //    docker exec -u <remoteUser> ... で「VS Code Server」というNode.jsプログラムを
-  //    コンテナ内に送り込み、remoteUser の権限で起動する。
+  // 　　「VS Code Server」というNode.jsプログラムをコンテナ内に送り込み、
+  //    docker exec -u <remoteUser> ... で起動する。
   // 2. その後、コンテナ内のターミナル（bash など）や言語サーバー（Python/TypeScript拡張機能）は、
-  //    外部から dockerd が都度送り込むのではなく、コンテナ内で動いている
+  //    コンテナ外から dockerd が都度送り込むのではなく、コンテナ内で動いている
   //    VS Code Server のサブプロセスとして起動する。
   "remoteUser": "node",
 
   // コンテナ作成後(初回コンテナ作成時と、rebuildした時)に実行される。
   // ~/.claude/settings.json に .devcontainer/statusline-command.sh を登録する。
-  "postCreateCommand": "sh .devcontainer/setup-statusline.sh",
+  // また、gitのhookパスの設定もおこなう。
+  "postCreateCommand": "sh .devcontainer/setup-statusline.sh && git config core.hooksPath .githooks",
 
   // features は、 VS Code + devcontainer拡張での構成、または、 Dev Container CLI
   // (CI等でも単体で使われる)でのビルド時にしか動かないので、ここでは使っていない。
@@ -30,6 +33,7 @@
   // Claude Code CLI 含む全ツールのインストールは Dockerfile に直書きしている。
   "customizations": {
     "vscode": {
+      // .vscode/settings.json とマージされる(キーが被った場合は .vscode 側の setting が優先)
       "settings": {
         "terminal.integrated.enableVisualBell": true,
         "accessibility.signals.terminalBell": {
