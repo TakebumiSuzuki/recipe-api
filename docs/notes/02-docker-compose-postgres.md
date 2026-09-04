@@ -61,7 +61,7 @@ volumes:
 
 - **Docker Engine（`dockerd`）が、外側から`interval`ごとにコンテナの中へコマンドを送り込んで実行する**仕組み。
   コマンドは毎回起動して終了するだけで、常駐はしていない。
-- Docker Engine が `interval` ごとにコンテナ内へ `docker exec` 相当で使い捨てのプロセスを起動し、その終了コードを判定に使います。判定は終了コードで行う。`0` なら healthy、`0以外` なら unhealthy。
+- Docker Engine が `interval` ごとにコンテナ内へ `docker exec` 相当で使い捨てのプロセスを起動し、その終了コードを判定に使います。`0` なら healthy、`0以外` なら unhealthy。
 
 #### pg_isready とは
 
