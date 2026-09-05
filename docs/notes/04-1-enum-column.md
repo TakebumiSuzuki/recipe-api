@@ -18,14 +18,13 @@ class Difficulty(StrEnum):
 
 - `Enum` に `str` をミックスインする（`class Difficulty(str, Enum)`）書き方は今も有効だが、
   Python 3.11 で **`StrEnum` という別クラス**が追加されたので、そちらを使うのが素直。
-  「`Enum` が str の機能を取り込んだ」わけではない。素の `Enum` は今も `str` ではない。
 - メンバー名は **UPPER_CASE が公式に「強く推奨」**されている。
   理由は (1) 定数だから (2) ミックスイン元のメソッド名との衝突を避けるため。
   実際 `StrEnum` で `upper = "..."` と書くと `str.upper` とぶつかる。
 - `EASY = ""` のように値を空にするのは危険。
   Python の Enum は「同じ値のメンバーは別名（エイリアス）」と見なすため、
   3つ書いても**エラーも警告も出ずに1つに潰れる**。
-- `EASY` とだけ書く（`=` を省く）のも無効。型注釈だけの行はメンバーにならず、空の Enum ができる。
+- `EASY` とだけ書く（`=` を省く）のも無効。
 
 ### メンバーの実体
 
@@ -39,9 +38,15 @@ class Difficulty(StrEnum):
 メタクラス `EnumType` がクラス定義時（＝モジュール読み込み時）にメンバーを全部作り切り、
 その後は `__new__` を差し替えて新規生成を封じているため。
 
+* ちなみに、`Difficulty("easy")`　の構文は、Postメソッドでクライアント側から送られたきた文字列を、
+エンドポイント関数内で Difficulty オブジェクトに変換するとき(このときバリデーションの役割も果たす。
+これらは、FastAPIでは、Pydanticが自動でやる作業)、や、
+DB側から情報を引き出したときに、文字列として、psycopgが sqlalchemyに渡した後、result processorが
+それを Difficulty クラスに変換するときなどに使われる。
+
 ### `.value` と `.name` — メンバーは値と名前を別々に持つ
 
-`EASY = "easy"` と書いたとき、`EASY` が**名前**、`"easy"` が**値**。
+`EASY = "easy"` と書いたとき、`EASY` が**名前(属性名)**、`"easy"` が**値**。
 1つのメンバーがその両方を属性として保持している。
 
 | 書き方 | 結果 |
@@ -105,6 +110,20 @@ CONSTRAINT ck_recipes_difficulty CHECK (difficulty IN ('easy','normal','hard'))
 `StrEnum` でも `str` をミックスインした `class Difficulty(str, Enum)` でも同じように動く。
 `str` を継承していない素の `Enum` だけが失敗する。
 
+### データフロー
+  #### ① 保存するとき（Python → DB）
+  1. recipe.difficulty = Difficulty.EASY を渡す。
+  2. Difficulty は StrEnum なので isinstance(Difficulty.EASY, str) が True（str の性質を持つ）。
+  3. SQLAlchemy の String(10) 型は、渡された値がすでに文字列なので bind processor は何もしない（実質 None / パススルー）。
+  4. psycopg にそのまま渡される。psycopg は「Pythonの str が来た」と判断し、UTF-8 のバイナリ列に変換して PostgreSQL に送信。
+  5. PostgreSQL の VARCHAR(10) に無事 "easy" が格納される。
+
+  #### ② 取得するとき（DB → Python）
+  1. PostgreSQL からバイナリデータが返ってくる。
+  2. psycopg がカラム型（VARCHAR）を見て、UTF-8 デコードし 素の Python str オブジェクト（'easy'）を作る。
+  3. SQLAlchemy の String(10) 型は、すでに str なので result processor も何もしない（実質 None / パススルー）。
+  4. その結果、モデルの recipe.difficulty には 素の str オブジェクトが入る。
+
 | Python 側の定義 | `String(10)` に保存 | DBの値 |
 |---|---|---|
 | `class Difficulty(StrEnum)` | OK | `easy` |
@@ -154,8 +173,12 @@ difficulty: Mapped[Difficulty] = mapped_column(
 | `create_constraint` | `False` | `True`（CHECK を自動で付ける） |
 | `length` | 最長メンバー長（=6） | 10 |
 
-`values_callable` は**保存のたびに走る関数ではない**。型を組み立てるときに1回だけ呼ばれて
-「DBに入れる値の一覧」を作る。特別なフックやデコレータは要らず、引数として渡すだけ。
+`values_callable` は**保存のたびに走る関数ではない**。型を初期化するとき（アプリ起動時にモデルが読み込まれたとき）に**1回だけ呼ばれ**、以下の3つを準備する：
+
+1. **DB制約用の値リスト**: CHECK 制約（`CHECK (difficulty IN ('easy', 'normal', 'hard'))`）やネイティブ ENUM の SQL を組み立てるための一覧。
+2. **保存用辞書 (`_valid_lookup`)**: `bind_processor` が使う `{Difficulty.EASY: 'easy', ...}` という変換マップ。
+3. **復元用辞書 (`_object_lookup`)**: `result_processor` が使う `{'easy': Difficulty.EASY, ...}` という逆変換マップ。
+
 （戻り値の順序は `__members__` を回る順と一致している必要がある。`[e.value for e in x]` なら問題ない。）
 
 
@@ -175,6 +198,45 @@ CONSTRAINT ck_recipes_difficulty CHECK (difficulty IN ('easy', 'normal', 'hard')
 | DBに入る値 | `easy` |
 | 取り出した型 | `Difficulty`（`StrEnum` なので `str` でもある） |
 | 不正値を保存 | `IntegrityError` |
+
+### 内部のデータフロー（bind / result processor と辞書引き）
+
+案Bでは、初期化時に作られた辞書を使って SQLAlchemy が裏で相互変換を行っている。
+
+#### 【前提：アプリ起動時】
+Python がモデルファイルを読み込んだ瞬間に `values_callable` が1回だけ実行され、メモリ上に2つの辞書が準備される。
+- `_valid_lookup = {Difficulty.EASY: 'easy', ...}`（保存用）
+- `_object_lookup = {'easy': Difficulty.EASY, ...}`（復元用）
+
+#### ① 保存するとき（Python → DB）
+1. `recipe.difficulty = Difficulty.EASY` を渡す。
+2. SQLAlchemy の `SAEnum` 型の **bind processor が動く**。
+   事前準備された `_valid_lookup` を引き、Enum オブジェクトから値の文字列を取り出す。
+   `_valid_lookup[Difficulty.EASY]` → `'easy'`
+   *(※もし未定義の不正なオブジェクトが渡されていたら、ここで `LookupError` を出してDB到達前に弾く)*
+3. 変換された素の文字列 `'easy'` が psycopg に渡される。
+4. psycopg は「Pythonの `str` が来た」と判断し、UTF-8 のバイナリ列に変換して PostgreSQL に送信。
+5. PostgreSQL の `VARCHAR(10)` に無事 `"easy"` が格納される。
+
+#### ② 取得するとき（DB → Python）
+1. PostgreSQL からバイナリデータが返ってくる。
+2. psycopg がカラム型（VARCHAR）を見て、UTF-8 デコードし **素の Python `str` オブジェクト（`'easy'`）を作る**。
+3. ここで SQLAlchemy の `SAEnum` 型の **result processor が動く**！
+   事前準備された `_object_lookup` を引き、文字列から Enum オブジェクトを取り出す。
+   `_object_lookup['easy']` → `Difficulty.EASY`
+4. その結果、モデルの `recipe.difficulty` には **復元された `Difficulty.EASY`（Enumオブジェクト）が入る**。
+
+#### 素の `Enum` でも動く理由（案Aとの大きな違い）
+案A（`String(10)`）では SQLAlchemy が型変換を素通しするため、メンバー自体が `str` の性質を持つ `StrEnum` でないとドライバ（psycopg）がバイナリ化できずにエラーになった。
+
+しかし案Bでは、**`bind_processor` が Enum オブジェクトから値（`'easy'`）を取り出して素の `str` に変換した上でドライバに渡す**ため、`Difficulty` が `StrEnum` である必要はなく、**素の `Enum`（`class Difficulty(Enum)`）であっても問題なく動作する**。
+
+| Python 側の定義 | 案A `String(10)` | 案B `SAEnum(...)` |
+|---|---|---|
+| `class Difficulty(StrEnum)` | OK（ただし取得時は `str`） | **OK**（取得時も `Difficulty`） |
+| `class Difficulty(str, Enum)` | OK（ただし取得時は `str`） | **OK**（取得時も `Difficulty`） |
+| `class Difficulty(Enum)` | **失敗**（ドライバが弾く） | **OK**（bind processor が変換するため動く） |
+
 
 ### `native_enum=False` を外すとどうなるか
 
@@ -254,11 +316,5 @@ CHECK制約も残しておけば、アプリを経由しない直接のINSERTへ
 
 ## 間違えやすい点
 
-- **`str` のミックスインが不要になったわけではない。** 素の `Enum` は今も `str` ではない。
-  Python 3.11 で追加されたのは `StrEnum` という別クラスであって、`Enum` 自体は変わっていない。
 - **名前が保存されるのは `sqlalchemy.Enum` を素で使ったときだけ。**
   `String(10)` では値（`easy`）が保存される。両者は別の話なので混ぜない。
-- **`values_callable` は `sqlalchemy.Enum` 専用の引数。** `String` には渡せず
-  （`TypeError`）、案Aでは最初から値が保存されるので必要もない。
-- **`EASY = ""` と全部空文字にすると、エラーではなく黙って1メンバーに潰れる。**
-  エラーが出ない分こちらのほうが厄介。

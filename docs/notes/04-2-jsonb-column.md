@@ -64,16 +64,15 @@ jsonb のバイナリ化
   ※ 構造を解釈した上で組み直している。元のテキストには戻らない
 ```
 
-PostgreSQL のソース（`src/include/utils/jsonb.h`）のコメント:
+内部のイメージは、**「本文の前に、辞書順の目次がついている本」** です。
 
-> The container array or object has an array that holds the JEntrys of all the child nodes,
-> followed by their variable-length portions.
+データは「目次エリア」と「本文エリア」に整理して格納されます。
 
-> An object has two children for each key/value pair. The keys all appear first, in key sort order;
-> then the values appear, in an order matching the key order.
+* **目次エリア：** すべてのキーが **あいうえお順（辞書順）** に並べ替えられ、それぞれの値が「本文の何番目にあるか」の位置情報と一緒に記録されます。
+* **本文エリア：** 実際のデータ本体（文字列や数値など）が置かれます。
 
-`JEntry` が目次にあたるヘッダ配列。キーはソート順にまとめて置かれる。
-だから「このキーはどこ？」を、先頭から全部読まずに探せる。
+普通のテキスト JSON だと、探したいキーが後ろにある場合、手前にある長い文章も 1 文字ずつ構文解析しながら読み進めるしかありません。
+一方、`jsonb` は辞書を引くように目次からキーを瞬時に絞り込み、指定された場所へ直接ジャンプして値を取り出せます。途中にどれだけ巨大なデータがあっても、一切読まずにスキップできるのが速さの理由です。
 
 ### 元テキストに戻らない、の具体的な中身
 
@@ -91,6 +90,8 @@ jsonb は構造として組み直すので、テキストとしての情報は�
 ただし内部では、保存されているテキストを**そのつど JSON として解析し直している**。
 （正規表現で `"url"` を探すような雑な処理ではなく、ちゃんとしたJSONパーサが動く。
 しかも目的のキーが見つかっても途中で止まらず、文書の最後まで読み切る。）
+
+※ ちなみに `->>` は「指定キーの値をテキスト型として取り出す」PostgreSQL 独自の演算子（標準 SQL や SQLAlchemy 固有の構文ではなく、SQLAlchemy も裏でこの演算子を発行している）。
 
 ```
 json 型のカラムに対して 1000 行を対象に ->> を実行
@@ -155,15 +156,9 @@ WHERE source->>'url' LIKE '%cookpad%';
 
 **`json` カラムにはインデックスを貼れない。`jsonb` カラムには貼れる。**
 
-公式ドキュメント:
-
-> `jsonb` also supports indexing, which can be a significant advantage.
-
 インデックスは「条件に当てはまる行はどれか」を高速に引くための索引のこと。
 これが無いと、JSONの中身で行を絞り込むたびに**全行を読んでパースし直す**ことになり、
 行数が増えるほど比例して遅くなる。
-
-**`jsonb` を選ぶ最大の実務上の理由がこれ。**（貼り方は後述）
 
 ### 比較まとめ
 
@@ -213,19 +208,10 @@ from sqlalchemy import JSON                      # 汎用
 from sqlalchemy.dialects.postgresql import JSONB  # PostgreSQL 専用
 ```
 
-| 書き方 | PostgreSQL に作られる型 |
-|---|---|
-| `mapped_column(JSON())` | `JSON` |
-| `mapped_column(JSONB())` | `JSONB` |
-
 汎用 `JSON` は「どのDBでも動く型」で、各DBのネイティブなJSON型に翻訳される。
 PostgreSQL では `JSON` になるため、**汎用型のままでは JSONB にならない**。
 JSONB は PostgreSQL 固有なので、`sqlalchemy.dialects.postgresql`（＝PostgreSQL専用の引き出し）
 から取ってくる必要がある。
-
-| 汎用 `JSON` が出すDDL | PostgreSQL | MySQL | SQLite |
-|---|---|---|---|
-| | `JSON` | `JSON` | `JSON` |
 
 ### Python側で使えるメソッドも変わる
 
@@ -260,18 +246,6 @@ from sqlalchemy.dialects.postgresql import JSONB
 source: Mapped[dict | None] = mapped_column(JSONB())
 ```
 
-`JSONB()` と `JSONB`（カッコなし）はどちらでも同じ結果になる。引数を渡さないなら好みの問題。
-
-### NULL 許可は `Mapped[...]` の書き方で決まる
-
-| 書き方 | 生成されるDDL |
-|---|---|
-| `Mapped[dict] = mapped_column(JSONB())` | `source JSONB NOT NULL` |
-| `Mapped[dict \| None] = mapped_column(JSONB())` | `source JSONB` |
-
-`| None` が付いているかどうかで NOT NULL が自動的に切り替わる。
-`source` は「未入力可」の仕様なので `Mapped[dict | None]` が正しい。
-
 ### 型注釈だけでは JSONB にならない
 
 `mapped_column()` に型を渡さず `Mapped[dict]` とだけ書くと、エラーになる。
@@ -285,23 +259,6 @@ for Python type indicated by '<class 'dict'>' inside the Mapped[] annotation
 
 `int` `str` `bool` `datetime` などは SQLAlchemy が最初から対応表を持っているが、
 `dict` は「JSON なのか JSONB なのか HSTORE なのか決められない」ため載っていない。
-
-対応表に自分で登録すれば自動化できる。Base クラスに書く。
-
-```python
-class Base(DeclarativeBase):
-    type_annotation_map = {dict: JSONB}
-```
-
-これで以下が動く。
-
-```python
-a: Mapped[dict]         # → JSONB NOT NULL
-b: Mapped[dict | None]  # → JSONB
-```
-
-プロジェクト全体で `dict` = JSONB と決め打ちできるなら便利。
-1カラムだけなら明示的に `mapped_column(JSONB())` と書くほうが読み手に親切。
 
 ### `JSONB()` の引数
 
@@ -328,27 +285,9 @@ recipe.source = None
 `WHERE source IS NULL` で判定したいなら `JSONB(none_as_null=True)`。
 実務では `JSONB()` と何も渡さないことがほとんど。
 
-**`index=True` はここには無い。** あれは `mapped_column()` 側の引数（次項）。
-
 ---
 
 ## インデックスの貼り方
-
-### `index=True` は JSONB では役に立たない
-
-```python
-source: Mapped[dict | None] = mapped_column(JSONB(), index=True)
-```
-
-これが作るのは **btree インデックス**。
-
-```sql
-CREATE INDEX ix_recipes_source ON recipes (source)
-```
-
-btree は「文書**全体**が完全一致するか」しか引けない。
-`source @> '{"type":"book"}'` のような中身の検索には使われない。
-`String` や `Integer` のカラムでは定番の書き方だが、**JSONB では基本的に使わない。**
 
 ### 何を検索したいかで、貼るべき索引が変わる
 
@@ -363,11 +302,6 @@ btree は「文書**全体**が完全一致するか」しか引けない。
 公式ドキュメントより、GIN（既定の `jsonb_ops`）が対応する演算子は
 `?` `?|` `?&` `@>` `@?` `@@` の6つ。**`->>` は含まれない。**
 
-> However, the index could not be used for queries like the following, because though the operator
-> `?` is indexable, it is not applied directly to the indexed column `jdoc`
-
-つまり `source->>'url' = '...'` を速くしたいなら、GIN を貼っても効かない。
-その式そのものに索引を貼る（式インデックス）。
 
 ### SQLAlchemy での書き方
 
@@ -412,17 +346,9 @@ CREATE INDEX ix_recipes_source_url ON recipes ((source ->> 'url'))
 
 ## 補足：JSONBカラムに制約は付けられるか
 
-**CHECK は付けられる。外部キーは付けられない。** ここは混同しやすい。
+**CHECK は付けられる。外部キーは付けられない。**
 
 ### CHECK制約 — 付けられる
-
-CHECK の構文は `CHECK ( expression )` で、式に書けるのは
-「同じ行の列を参照する、副問い合わせを含まない式」（公式ドキュメント）。
-
-> Currently, `CHECK` expressions cannot contain subqueries nor refer to variables other than
-> columns of the current row.
-
-JSONB の演算子・関数はこの条件を満たすので、そのまま書ける。
 
 ```python
 from sqlalchemy import CheckConstraint
@@ -449,37 +375,6 @@ CONSTRAINT ck_source_type      CHECK (source->>'type' IN ('book','url','tv'))
 | `source->>'type' IN (...)` | `type` の値が決まった選択肢のいずれかであること |
 
 つまり「JSONだから何でも入れ放題」ではなく、**最低限の形は DB 側で強制できる**。
-「どんな形でもよい」と「まったく検証しない」は別の話なので、
-最低限の骨格が決まっているなら CHECK を1つ付けておくとよい。
-
-### 外部キー — 付けられない
-
-`CREATE TABLE` の構文（公式ドキュメント）:
-
-```
-FOREIGN KEY ( column_name [, ... ] ) REFERENCES reftable [ ( refcolumn [, ... ] ) ]
-```
-
-受け付けるのは **列名だけ**で、式は書けない。だから次のようなことはできない。
-
-```sql
--- 書けない
-FOREIGN KEY ((source->>'author_id')) REFERENCES users(id)
-```
-
-JSONの中に他テーブルのIDを入れても、**DBはその整合性を一切保証しない**。
-参照先が消えても気づけず、静かに壊れたIDが残る。
-
-```
-普通の列       : user_id INTEGER REFERENCES users(id)
-                 → users の行が消えたらDBが止める／連鎖削除する
-
-JSONの中のID  : source = {"author_id": 7}
-                 → users の 7 番が消えても放置される
-```
-
-**他テーブルを参照する値は JSON に入れず、普通の列＋外部キーにする。**
-これが「構造が決まっているものは普通の列にする」の一番わかりやすい適用例。
 
 ---
 
@@ -519,14 +414,11 @@ source: Mapped[dict | None] = mapped_column(MutableDict.as_mutable(JSONB()))
 - **`json` 型でもキーの取り出しはできる。** 「`json` は検索できない」は誤り。
   `->` `->>` `#>` `#>>` は両方で使える。差は「毎回パースするので遅い」「インデックスを貼れない」
   「`@>` や `?` が使えない」の3点。
-- **JSONB の B は文字コード変換ではない。** パースして構造を組み直したレイアウトのこと。
+- **JSONB の B は パースして構造を組み直したレイアウト**のこと。
   だから空白もキー順も保持されない。
-- **`index=True` は `JSONB()` の引数ではない。** `mapped_column()` の引数であり、
-  JSONB に付けても btree になって中身の検索には効かない。
 - **GIN を貼れば何でも速くなるわけではない。** GIN が効くのは `@>` `?` 系。
   `->>` で絞り込むなら式インデックスが別途要る。
 - **`Mapped[dict]` は NOT NULL になる。** 未入力可にするなら `Mapped[dict | None]`。
 - **辞書の中身を書き換えても UPDATE は飛ばない。** 代入し直すか `MutableDict` を使う。
 - **CHECK制約は JSONB カラムにも付けられる。** 付けられないのは外部キーのほう。
   `CHECK (source ? 'type')` のようにキーの存在や値の範囲を DB 側で保証できる。
-- **JSONの中に他テーブルのIDを入れても外部キーにはならない。** 参照関係が要るものは普通の列にする。

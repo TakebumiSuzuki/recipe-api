@@ -1,16 +1,16 @@
-from datetime import date, datetime
+from datetime import datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from app.models.base import Base
 from sqlalchemy import (
     CheckConstraint,
-    Date,
     DateTime,
     ForeignKey,
     Index,
     String,
     UniqueConstraint,
+    func,
     text,
 )
 from sqlalchemy import Enum as SAEnum
@@ -31,7 +31,9 @@ class Recipe(Base):
     __tablename__ = "recipes"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
     title: Mapped[str] = mapped_column(String(100))
     description: Mapped[str | None] = mapped_column(String(5000))
     servings: Mapped[int]
@@ -46,12 +48,21 @@ class Recipe(Base):
             name="recipes_difficulty_enum",
         )
     )
-    is_published: Mapped[bool] = mapped_column(server_default=text("false"))
-    published_on: Mapped[date] = mapped_column(Date())
     source: Mapped[dict | None] = mapped_column(JSONB())
-    created_at: Mapped[datetime] = mapped_column(DateTime())
 
-    user: Mapped["User"] = relationship(back_populates="recipes", )
+    is_published: Mapped[bool] = mapped_column(server_default=text("false"))
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        server_onupdate=func.now(),
+    )
+
+    user: Mapped["User"] = relationship(back_populates="recipes")
 
     __table_args__ = (
         UniqueConstraint("user_id", "title"),
