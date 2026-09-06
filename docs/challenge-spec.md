@@ -41,7 +41,7 @@ FastAPI の学習で身につけた内容を、**手本を見ずに自分で設�
 ### 扱う（＝今回の課題に含める）
 
 - **テーブル間の関係を3種類すべて**：1対1、1対多、多対多（2パターン）
-- **カラム型のバリエーション**：Enum、Numeric、Date、タイムゾーン付き日時、Boolean、Text、SmallInteger、JSONB
+- **カラム型のバリエーション**：Enum、Numeric、タイムゾーン付き日時、Text、SmallInteger、JSONB
 - **PostgreSQL**（SQLite は使わない）を **Docker Compose** で起動する
 - **Alembic** でのマイグレーション。しかも「既存データがある状態でのスキーマ変更」を1回経験する
 - **ロギング設定**（アプリのログと uvicorn のログの形式を揃える、リクエストIDを付ける）
@@ -143,7 +143,8 @@ PostgreSQL（Docker コンテナの中）
 ## 5. テーブル定義
 
 型は「こういう性質のデータを入れたい」という意図で書いている。
-SQLAlchemy でどう書くか（`mapped_column` の引数など）は自分で調べて決める。
+SQLAlchemy でどう書くか（`mapped_column` の引数など）はモデル側で定義する。
+なお、制約やインデックスの命名規則は `app/models/base.py` の `naming_convention`（`ix`, `uq`, `ck`, `fk`, `pk`）に従って自動命名させる。
 
 ### users（投稿者）
 
@@ -154,6 +155,17 @@ SQLAlchemy でどう書くか（`mapped_column` の引数など）は自分で�
 | `email` | 文字列、最大255文字。**重複禁止** |
 | `bio` | 自己紹介。長文可（Text）、未入力可 |
 | `created_at` | 作成日時。**タイムゾーン付き**、DB 側で自動的に現在時刻が入る |
+| `updated_at` | 更新日時。**タイムゾーン付き**、DB 側で自動的に現在時刻が入り、更新時にも自動更新される |
+
+制約として次の内容を入れる。
+
+- `name` は空白を除いて 2 文字以上（CheckConstraint: `length(trim(name)) >= 2`）
+- `bio` は空白を除いて 1000 文字以下（CheckConstraint: `length(trim(bio)) <= 1000`）
+- `email` は簡易正規表現によるメール形式チェック（CheckConstraint: `email ~ '^.+@.+$'`）
+- `email` は小文字であること（CheckConstraint: `email = lower(email)`）
+- `email` は重複禁止（一意制約）
+
+> レシピとのリレーションには `passive_deletes=True` を設定する（投稿者が削除された場合、レシピ側の `user_id` は DB の `ON DELETE SET NULL` により `NULL` に更新され、レシピ自体は保持される）。
 
 > **タイムゾーン付き日時**：PostgreSQL の `timestamptz` 型のこと。
 > 「2026-08-24 10:00」だけでなく「どこの時刻か」まで保存する。
@@ -164,21 +176,28 @@ SQLAlchemy でどう書くか（`mapped_column` の引数など）は自分で�
 | 意図 | 内容 |
 | --- | --- |
 | `id` | 主キー |
-| `user_id` | `users.id` への外部キー（1対多の「多」側） |
+| `user_id` | `users.id` への外部キー（1対多の「多」側）。**未入力可**、ユーザー削除時は `SET NULL` |
 | `title` | 文字列、最大100文字 |
-| `description` | 説明文。長文可、未入力可 |
-| `servings` | 何人分か。小さい整数 |
-| `cook_time_min` | 調理時間（分）。小さい整数 |
-| `difficulty` | `easy` / `normal` / `hard` のいずれか（Enum） |
-| `is_published` | 公開済みか。真偽値、初期値は「非公開」 |
-| `published_on` | 公開日。**日付のみ**（時刻を持たない）、未公開なら空 |
+| `description` | 説明文。長文可（Text）、未入力可 |
+| `servings` | 何人分か。整数 |
+| `cook_time_min` | 調理時間（分）。整数 |
+| `difficulty` | `easy` / `normal` / `hard` のいずれか（Enum: `difficulty_enum`） |
 | `source` | 出典情報。JSONB、未入力可 |
-| `created_at` / `updated_at` | タイムゾーン付き日時 |
+| `published_at` | 公開日時。**タイムゾーン付き日時**、未公開なら空（NULL） |
+| `created_at` / `updated_at` | タイムゾーン付き日時。作成時・更新時に自動設定 |
 
-制約として次の2つを入れる。
+制約・インデックスとして次の内容を入れる。
 
 - 同じ投稿者が同じタイトルのレシピを2つ作れないようにする（`user_id` と `title` の複合ユニーク制約）
-- `cook_time_min` は 1 以上（CheckConstraint）
+- `servings` は 1 以上（CheckConstraint: `servings >= 1`）
+- `description` は空白を除いて 5000 文字以下（CheckConstraint: `length(trim(description)) <= 5000`）
+- `cook_time_min` は 1 以上（CheckConstraint: `cook_time_min >= 1`）
+- `source` に GIN インデックスを設定
+- `user_id` は外部キー削除時に `SET NULL`（`ondelete="SET NULL"`）
+
+> **`published_at` をタイムゾーン付き日時にした理由**：
+> 「公開日（`published_on: Date`）」をサーバー側の UTC で保存すると、時差によってユーザーの現地時間の日付とずれる問題（例: JST 9/5 朝 8:00 に公開すると UTC では 9/4 23:00 となり前日公開になってしまう）が発生する。
+> そのため、日付単体ではなく正確な瞬間を記録するタイムゾーン付き日時の `published_at` を採用している。また、未公開時は `NULL` とすることで、真偽値カラム `is_published` を持たずに「`published_at` が存在するか否か」で公開・非公開を判定できる。
 
 > **`source` を JSONB にした理由**：出典はレシピによって形が違う。
 > 「URL だけ」のこともあれば「書籍名＋著者＋ページ番号」「番組名＋放送日」のこともある。
@@ -267,7 +286,7 @@ SQLAlchemy 側では `relationship()` に「1件しか返さない」設定を�
 
 - `POST /recipes` … レシピを登録する。材料・手順・タグを**入れ子のJSONで一括受け取り**する
 - `GET /recipes/{recipe_id}` … 材料・手順・タグ・栄養情報まで入れ子で返す
-- `GET /recipes` … 一覧。ページネーションと絞り込み（`tag` / `difficulty` / `user_id` / `is_published`）
+- `GET /recipes` … 一覧。ページネーションと絞り込み（`tag` / `difficulty` / `user_id` / `is_published`（`published_at` の有無で判定））
 - `PATCH /recipes/{recipe_id}` … 部分更新（送られてこなかった項目は変更しない）
 - `DELETE /recipes/{recipe_id}` … 削除。関連する手順・材料の紐付けも消える
 
@@ -451,7 +470,7 @@ SQLAlchemy 側では `relationship()` に「1件しか返さない」設定を�
 #### Step 12. `GET /recipes`（一覧・絞り込み・ページネーション）
 
 - **学ぶこと**：クエリパラメータで条件を組み立てる。件数と明細を返す形の設計
-- **やること**：`tag` / `difficulty` / `user_id` / `is_published` で絞り込む。
+- **やること**：`tag` / `difficulty` / `user_id` / `is_published`（`published_at` の有無による判定）で絞り込む。
   `limit` と `offset`、総件数を返す
 - **終わったと言える状態**：条件の組み合わせごとにテストが通る
 

@@ -19,7 +19,7 @@ backend/
 ├── .env                    # DATABASE_URI=...
 ├── pyproject.toml
 └── app/
-    ├── __init__.py         # ← 必須（後述）
+    ├── __init__.py         # ← 必須（後述、これがないと app/ を sys.path に入れてしまう）
     ├── main.py             # FastAPI() と /health
     ├── deps.py             # get_db_session
     └── core/
@@ -48,7 +48,7 @@ backend/
 ```
 postgresql + psycopg :// myuser : mypassword @ db : 5432 / mydb
 └────┬───┘   └──┬──┘     └──┬─┘   └────┬───┘   └┬┘  └─┬┘   └─┬─┘
-   DB種類    ドライバ名   ユーザ名   パスワード  ホスト ポート  DB名
+   DB種類    ドライバ名   ユーザ名   パスワード      ホスト ポート  DB名
 ```
 
 - ホスト名は `db`（compose のサービス名）。`localhost` ではない。backend と db は別コンテナ。
@@ -64,13 +64,6 @@ postgresql + psycopg :// myuser : mypassword @ db : 5432 / mydb
 | `create_engine(url)` | URL を解析し、ドライバを import する | **繋がない** |
 | `SessionLocal()` | Session オブジェクトを作るだけ | **繋がない** |
 | `session.execute(...)` | ここで初めて接続を取りに行く | **繋ぐ** |
-
-存在しないホストで実測した結果:
-
-```
-SessionLocal() 呼び出し: Session -> エラーなし
-execute() 時: sqlalchemy.exc.OperationalError
-```
 
 この性質のおかげで、エラーの出るタイミングが分かれる:
 
@@ -180,39 +173,43 @@ class Settings(BaseSettings):
 
 ## つまづいたこと・誤解していたこと
 
+### `fastapi run` と `fastapi dev` の違い
+
+| | reload | 待ち受けアドレス |
+| --- | --- | --- |
+| `fastapi run` | 無効 | `0.0.0.0` |
+| `fastapi dev` | 有効 | `127.0.0.1` |
+
+`run` は本番モード。開発中は `fastapi dev` を使う。
+
+- cwd を `backend/` にする必要がある。理由は2つ:
+  (1) `app/main.py` を探す起点が cwd、(2) `env_file=".env"` の相対パスも cwd 基準。
+- パス指定は不要。引数なしのとき、`cwd`(ここでは`backend/`にする)を基準とし、`main.py` → `app.py` → `api.py` → **`app/main.py`** → `app/app.py` → `app/api.py` の順に探す。
+- devcontainer 内では `dev` の `127.0.0.1` bind がブラウザから届かないことがある。
+  その場合は `--host 0.0.0.0` を付ける（`--help` にも「コンテナ内では 0.0.0.0 を使え」とある）。
+
 ### `__init__.py` が無いと FastAPI CLI が import に失敗する
 
-会話の途中で「今は動きます」と言われたが、**FastAPI CLI 経由では動かなかった**。
+#### CLI によるルート判定 → `sys.path`追加 の仕組み
 
-```
-ERROR    Import error: No module named 'app'
-```
+FastAPI（`fastapi dev`）や Flask（`flask run`）などで CLI コマンドを実行した際、CLI はプロジェクトのルートディレクトリを自動検出して `sys.path` に追加する。
 
-CLI は `__init__.py` の有無で解釈を変える:
+このルート判定は、**cwd（カレントワーキングディレクトリ）を基準として**以下のような決められた順番で発見したエントリーポイントのファイル（`main.py` や `app.py` など）から親ディレクトリへ遡り、`__init__.py` が切れた場所をルートとみなす、という共通の仕様で行われる。
 
-```
-__init__.py なし → app/ は単なるフォルダ
-                   sys.path に backend/app を追加 → import string は "main:app"
-                   → main.py の中の `from app.deps import ...` が解決できない
+| ツール | ハードコードされている探索リスト |
+| :--- | :--- |
+| **Flask** | `wsgi.py` → `app.py` |
+| **FastAPI** | `main.py` → `app.py` → `api.py` → `app/main.py` → `app/app.py` → `app/api.py` |
 
-__init__.py あり → app/ はパッケージ
-                   sys.path に backend を追加 → import string は "app.main:app"
-                   → 通る
-```
+#### 今回のエラーの原因
 
-`app/__init__.py` を空ファイルで置いただけで解決した:
+FastAPI CLI が一段深い階層にある `app/main.py` を見つけた際、`app/__init__.py` が無かったため `app/` をプロジェクトルートだと誤認して、`app/` を `sys.path` に登録してしまった。その結果、`main.py` 内の `from app.deps import ...` を解決する際にインポートのエラーが発生。
 
-```
-🐍 Using import string: app.main:app (auto-discovered)
-INFO:     Uvicorn running on http://0.0.0.0:8000
-```
-
-`fastapi run --help` にも `A path to a Python file or package directory (with __init__.py files)`
-と書かれている。名前空間パッケージ（3.3+ で `__init__.py` 不要）が効くのは
-`python -m` などで自分で起動した場合の話で、CLI の自動検出には通用しない。
+`app/__init__.py` を空ファイルで置くだけで `app/` がパッケージと認識され、親の `backend` が正しく `sys.path` に入るため解決する（インポート文字列も `main:app` から `app.main:app` に変わる）。
 
 
-### Pylance の「Argument missing for parameter」は ruff ではない
+
+### Pylance の「Argument missing for parameter」エラー
 
 ```
 app/core/config.py  Argument missing for parameter "database_uri"   [Pylance]
@@ -224,24 +221,9 @@ app/core/config.py  Argument missing for parameter "database_uri"   [Pylance]
 pydantic 本家でも dataclass transform の制約で直せない既知の問題
 （[pyright#4556](https://github.com/microsoft/pyright/issues/4556),
 [pydantic discussion#7025](https://github.com/pydantic/pydantic/discussions/7025)）。
-pydantic-settings の公式ドキュメントには記載自体が無い。
 
 `# type: ignore[call-arg]` で解決した。
 
-### `fastapi run` と `fastapi dev` の違い
-
-| | reload | 待ち受けアドレス |
-| --- | --- | --- |
-| `fastapi run` | 無効 | `0.0.0.0` |
-| `fastapi dev` | 有効 | `127.0.0.1` |
-
-`run` は本番モード。開発中は `fastapi dev` を使う。
-
-- パス指定は不要。引数なしのとき `main.py` → `app.py` → `api.py` → **`app/main.py`** の順に探す。
-- cwd を `backend/` にする必要がある。理由は2つ:
-  (1) `app/main.py` を探す起点が cwd、(2) `env_file=".env"` の相対パスも cwd 基準。
-- devcontainer 内では `dev` の `127.0.0.1` bind がブラウザから届かないことがある。
-  その場合は `--host 0.0.0.0` を付ける（`--help` にも「コンテナ内では 0.0.0.0 を使え」とある）。
 
 ### 動作確認は `/docs` から
 

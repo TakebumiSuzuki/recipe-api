@@ -1,4 +1,4 @@
-# Step 4-4. 値が DB と行き来するときの型変換（メンタルモデル構築ガイド）
+# Step 4-0. 値が DB と行き来するときの型変換（メンタルモデル構築ガイド）
 
 対応: `challenge-spec.md` 第2段階 / Step 4 の派生
 
@@ -33,7 +33,7 @@
 
 ### 核心：なぜ psycopg は列の型を知らないのか？
 
-SQLAlchemy がドライバ（psycopg）にクエリを渡すとき、渡しているのは **「SQL 文字列」と「パラメータの値」だけ** です。
+SQLAlchemy がドライバ（psycopg）にクエリを渡すとき、渡しているのは **「SQL 文字列」と「パラメータの値(Pythonの型のオブジェクト)」だけ** です。
 
 ```python
 # 渡される実態のイメージ
@@ -43,7 +43,7 @@ cursor.execute(
 )
 ```
 
-「`servings` が DB 上でどの列か、何型か」というスキーマ情報はドライバには一切渡されません。
+「`servings` が DB 側でどの列か、何型か」というスキーマ情報はドライバには一切渡されません。
 そのため、**psycopg は手元にある値の Python 型（`type(val)`）だけを見てバイト列に変換する** という仕組みになっています。
 
 ---
@@ -64,7 +64,7 @@ cursor.execute(
  ─── DBAPI 境界 ───
        │
    ③ psycopg の Dumper
-       │  ・値の Python 型だけを見て、PostgreSQL のバイト列に変換する
+       │  ・値の Python 型だけを見て、あらかじめ決められたルールに従って PostgreSQL のバイト列に変換する
        ▼
  ─── ネットワーク ───
        │
@@ -108,6 +108,13 @@ cursor.execute(
 #### 4. PostgreSQL
 受け取ったバイト列を実際のテーブル定義と照合し、保存します。
 
+- **型の検証（メモリ上での解釈）**:
+  送られてきたバイト列を一度メモリ上でテーブル定義の型（`INTEGER` や `JSONB` など）として解釈し、型のルールや制約（値の範囲、NOT NULL、CHECK制約など）に違反していないか照合・検証します。
+- **PostgreSQL 独自の「内部バイナリ形式」への変換**:
+  送られてきた生のバイナリをそのまま書き込むのではなく、DBエンジンが最も高速に読み書き・検索できるよう最適化された内部バイナリ表現に作り直します（例: `JSONB` の不要な空白削除・キーのソートや目次情報の付加、数値のメモリアライメント調整など）。
+- **管理情報の付加とディスク保存**:
+  各カラムのデータに、トランザクション管理情報（`xmin` / `xmax`）や NULL ビットマップなどの行ヘッダーを付け足した「タプル（行）」と呼ばれるバイナリを組み立て、最終的に 8KB のページ（ブロック）単位でディスクに書き込みます。
+
 ---
 
 ## 3. 読み取りの流れ（DB → Python）
@@ -147,22 +154,7 @@ cursor.execute(
 
 ## 4. 型変換の対応表
 
-本プロジェクトの `Recipe` モデルの全カラムが、各層をどう通過しているかの対応表です。
-
-| カラム名 | ① SQLAlchemy 型<br>(mapped_column) | ② Python 型<br>(Mapped[T]) | ③ 書き込み時<br>(bind_processor) | ④ DBAPI (psycopg)<br>Dumper / Loader | ⑤ 読み取り時<br>(result_processor) | ⑥ PostgreSQL 型<br>(テーブル定義) |
-|---|---|---|---|---|---|---|
-| `id` / `user_id` | `Integer` | `int` | 素通り | `int` ⇄ 4バイト整数 | 素通り | `integer` |
-| `title` | `String(100)` | `str` | 素通り | `str` ⇄ UTF-8 バイト列 | 素通り | `varchar(100)` |
-| `description` | `String(5000)` | `str \| None` | 素通り | `str \| None` ⇄ バイト列 | 素通り | `varchar(5000)` |
-| `servings` | `Integer` | `int` | 素通り | `int` ⇄ 4バイト整数 | 素通り | `integer` |
-| `cook_time_min` | `Integer` | `int` | 素通り | `int` ⇄ 4バイト整数 | 素通り | `integer` |
-| `difficulty` | `SAEnum(Difficulty)` | `Difficulty` | **変換** (Enum → str) | `str` ⇄ UTF-8 バイト列 | **変換** (str → Enum) | `varchar(10)` |
-| `is_published` | `Boolean` | `bool` | **検証** (bool 確認) | `bool` ⇄ 真偽値 | 素通り | `boolean` |
-| `published_on` | `Date` | `date` | 素通り | `date` ⇄ 日付バイナリ | 素通り | `date` |
-| `source` | `JSONB` | `dict \| None` | **変換** (dict → JSON文字列) | `str` 送信 / `dict` 受信 | 素通り | `jsonb` |
-| `created_at` | `DateTime` | `datetime` | 素通り | `datetime` ⇄ タイムスタンプ | 素通り | `timestamp` |
-
-### 参考：Web 開発でよく使われる代表的な型の全体まとめ
+### Web 開発でよく使われる代表的な型の全体まとめ
 
 `Recipe` モデルに含まれていない型（`Time`, `Float`, `Numeric`, `Uuid` など）を含めた、実務で頻出する型の通過パターン一覧です。
 

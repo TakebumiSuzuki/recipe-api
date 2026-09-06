@@ -29,7 +29,7 @@ created_at: Mapped[datetime] = mapped_column(
 
 この定義に対して、アプリ側がどのような値を渡すかによって DB の挙動は大きく異なります。
 
-### ① アプリ側から送らない（未指定にする）：【推奨・正解】
+### ① アプリ側から created_at を送らない（未指定にする）：【推奨・正解】
 
 ```python
 recipe = Recipe(title="オムライス", cook_time_min=15, servings=2)
@@ -45,7 +45,7 @@ recipe = Recipe(title="オムライス", cook_time_min=15, servings=2)
 
 ---
 
-### ② 【最大の落とし穴】アプリ側から `None` を送る：【エラーになる】
+### ② 【最大の落とし穴】アプリ側から `created_at=None` を送る：【エラーになる】
 
 「`created_at` を `None` にしておけば、空扱いになって DB 側でデフォルト値を入れてくれるのでは？」と考えがちですが、**これは動きません**。
 
@@ -83,14 +83,6 @@ recipe = Recipe(title="オムライス", created_at=custom_time)
 
 ---
 
-### まとめ：`created_at` への渡し方と DB の挙動
-
-| アプリ側の渡し方 | 発行される SQL | DB 側の挙動 | 判定 |
-| :--- | :--- | :--- | :--- |
-| **未指定（渡さない）** | 列が INSERT 句に含まれない | `DEFAULT now()` が発動し、現在時刻が入る | **◎ 正常（基本はこれ）** |
-| **`created_at=None`** | `..., created_at) VALUES (..., NULL)` | 明示的 NULL と判定され NOT NULL エラー | **× 例外発生** |
-| **日時オブジェクト** | `..., created_at) VALUES (..., '...')` | 渡した日時がそのまま保存される | **○ 任意日時の指定時** |
-
 > **FastAPI / Pydantic でのポイント**:
 > API で新規作成を受け取るスキーマ（`RecipeCreate`）には、そもそも `created_at` フィールドを含めない設計にするのが鉄則です。クライアントから受け取らないことで、うっかり `None` が DB に流れるのを防げます。
 
@@ -115,6 +107,35 @@ SQLAlchemy 2.0 では、型ヒントに `| None`（Optional）を付けると、
 
 つまり、`created_at` と違って **「未指定でも、明示的に `None` を渡しても、安全に NULL で登録される」** という挙動になります。
 
+### ③ エンドポイント関数から「公開（現在日時）」をセットする書き方
+
+レシピを「公開」するエンドポイント（例: `PATCH /recipes/{id}` や `POST /recipes/{id}/publish`）の中で、`published_at` にサーバー側の現在日時を設定するには主に **2 つの書き方** があります。
+
+#### パターン A: Python 側で UTC の aware 日時を渡す（推奨・FastAPI で扱いやすい）
+```python
+from datetime import datetime, timezone
+
+# エンドポイントや CRUD 関数の中
+recipe.published_at = datetime.now(timezone.utc)
+session.commit()
+return recipe
+```
+- **特徴**: Python のメモリ上にすでに `datetime` オブジェクトが入っているため、`session.refresh(recipe)` を呼ばなくても FastAPI のレスポンス（Pydantic）にそのまま渡せます。
+- **前提**: アプリサーバーの時計が NTP 等で正確に同期されていること。
+
+#### パターン B: DB サーバー側の SQL 関数 `func.now()` を渡す
+```python
+from sqlalchemy import func
+
+# エンドポイントや CRUD 関数の中
+recipe.published_at = func.now()
+session.commit()
+session.refresh(recipe)  # ★ DB で生成された実際の日時を Python 側に再読み込みする
+return recipe
+```
+- **特徴**: DB サーバー側の時計（PostgreSQL の `now()`）で確実に更新されます。
+- **注意点**: `func.now()` は SQL 式オブジェクトのため、コミット直後の `recipe.published_at` はまだ Python の `datetime` ではなく SQL 式のままです。クライアントへレスポンスを返す前に **`session.refresh(recipe)`** を呼んで DB から実際の値を取得し直す必要があります。
+
 ---
 
 ## 3. Date 型を「サーバー側の UTC」で扱うときの致命的な罠
@@ -123,6 +144,8 @@ SQLAlchemy 2.0 では、型ヒントに `| None`（Optional）を付けると、
 
 ### `Date` 型はタイムゾーン情報を持たない
 PostgreSQL の `DATE` 型は、純粋に **「年月日（YYYY-MM-DD）」** だけを保持し、時刻やタイムゾーン情報を持ちません。
+
+（また、pythonの `date` オブジェクトも、タイムゾーンの概念を持ちません。）
 
 ### 何が問題になるのか？（時差の罠）
 仮に DB サーバーが UTC で動作しており、UTC 基準で今日の日付を取得（`CURRENT_DATE`）したとします。
@@ -178,6 +201,11 @@ Python の日時オブジェクトには 2 つの状態があります。
 
 ### ② `DateTime(timezone=True)` とドライバ（psycopg）の真実
 
+> **Q. `DateTime()` のデフォルトは `timezone=False` なのか？**
+> **はい、デフォルトは `timezone=False` です。**
+> SQLAlchemy の定義は `DateTime(timezone: bool = False)` となっており、引数なしで `DateTime()` と書くと PostgreSQL ではタイムゾーンを持たない `TIMESTAMP WITHOUT TIME ZONE`（TIMESTAMP）になってしまいます。
+> タイムゾーン付き（`TIMESTAMPTZ`）にするには、必ず明示的に **`DateTime(timezone=True)`** と指定する必要があります。
+
 `DateTime(timezone=True)` と設定したとき、SQLAlchemy や psycopg は何をしているのでしょうか？
 
 ```
@@ -196,7 +224,7 @@ Python の日時オブジェクトには 2 つの状態があります。
 【DB 側】
 ```
 
-Step 4-4 で学んだ通り、`DateTime` 型は SQLAlchemy の `bind_processor` を持たず、**素通り** します。
+Step 4-0 で学んだ通り、`DateTime` 型は SQLAlchemy の `bind_processor` を持たず、**素通り** します。
 そして、ドライバ（psycopg）は **渡された Python オブジェクトの実際の状態だけを見て** バイト列に変換します。
 
 #### パターン A: Python 側が aware (`tzinfo=timezone.utc`) の場合【安全】
@@ -222,9 +250,6 @@ A. **あります。** `time(15, 30, tzinfo=timezone.utc)` のように指定で
 しかし、**実務のデータベース設計において、時刻だけのタイムゾーン付き型（PostgreSQL の `TIMETZ`）は原則として使いません**。
 
 ### なぜ `TIMETZ` は使われないのか？
-PostgreSQL の公式ドキュメントでも次のように述べられています：
-> *"The type time with time zone is defined by the SQL standard, but the definition exhibits properties which lead to questionable usefulness."*
-> （time with time zone 型は SQL 標準で定義されているが、その有用性には疑問が残る性質を持っている）
 
 日付（年月日）がないのにタイムゾーン情報だけがあっても、**「サマータイム（夏時間）の切り替え」** や **「日付変更線をまたぐ計算」** が正しく判定できないためです。
 
@@ -267,7 +292,93 @@ class Recipe(Base):
     )
 ```
 
-### 心に留めておくべき 3 大原則
+### 心に留めておくべき 4 大原則
 1. **`server_default` はカラムが省略された時だけ動く**。`None` を渡すと明示的 NULL 扱いとなり NOT NULL 制約違反で落ちる。
 2. **日付単体（`Date`）を UTC で扱うと日付ズレが起きる**。瞬間を記録するなら `DateTime(timezone=True)` にして表示側で現地時間に直す。
 3. **Python で日時を作る時は常に aware（`timezone.utc`）にする**。SQLAlchemy / psycopg は naive datetime にタイムゾーンを勝手に補完してはくれない。
+4. **`onupdate` は DB 制約ではなく SQLAlchemy の自動 SET 注入**。PostgreSQL で自前トリガーを用意しない限り、`server_onupdate` ではなく `onupdate=func.now()` を使う。
+
+---
+
+## 7. 発展・気づき：updated_at の更新機序（onupdate と server_onupdate の決定的な違い）
+
+`Recipe` モデルの `updated_at` の定義でよく見られるのが、次のような書き方です。
+
+```python
+# ✕ 動かない書き方（PostgreSQL で自動更新されない）
+updated_at: Mapped[datetime | None] = mapped_column(
+    DateTime(timezone=True),
+    server_onupdate=func.now(),
+)
+```
+
+「`server_onupdate` を指定したのに、レコードを更新しても `updated_at` が更新されないのはなぜか？」
+「そもそも `onupdate` は DB 側に制約やトリガーを作るのか？ それとも SQLAlchemy が自動で命令を送っているのか？」
+
+この疑問と動作機序を整理します。
+
+### ① 結論：onupdate は DB 制約ではなく「SQLAlchemy が UPDATE 文に SET 句を差し込む」仕組み
+
+疑問に対する結論として、**まさにその通りです。DB 側に制約やトリガーを作るのではなく、SQLAlchemy 側が UPDATE 時に自動的に `SET updated_at = now()` という命令を差し込んで発行しています**。
+
+#### 動作機序（裏側で何が起きているか）
+1. アプリ側で `recipe.title = "新しいタイトル"` のようにモデルの属性を変更して `session.commit()` を呼ぶ。
+2. SQLAlchemy は変更検知（Unit of Work）により、`recipes` テーブルに対する `UPDATE` 文を組み立てる。
+3. カラムに `onupdate=func.now()` が指定されていると、SQLAlchemy は **発行する UPDATE 文の SET 句に、自動的に `updated_at = now()` を追加して DB に送信する**。
+
+```sql
+-- 実際に発行される SQL
+UPDATE recipes 
+SET title = '新しいタイトル', 
+    updated_at = now()   -- ★ SQLAlchemy が自動で差し込んだ命令！
+WHERE recipes.id = 1;
+```
+
+このように、**Python/SQLAlchemy レベルのフック処理** として SQL 式を自動注入するのが `onupdate` です。
+そのため、DB 側にトリガーなどの特別な設定がなくても、SQLAlchemy 経由の更新であれば確実に最新時刻に更新されます。
+
+---
+
+### ② server_onupdate の真実（なぜ PostgreSQL で動かないのか）
+
+では、`server_onupdate` は何をしているのでしょうか？
+
+- **`server_onupdate` の本質**:
+  これは DB 側に命令を生成するものではなく、**「このカラムは DB 側のトリガー等によって自動更新されるカラムだから、UPDATE 後に SQLAlchemy 側で値を再読み込み（リフレッシュ）してね」と SQLAlchemy に教えるための “マーカー（通知フラグ）”** に過ぎません。
+- **PostgreSQL の仕様**:
+  MySQL には `ON UPDATE CURRENT_TIMESTAMP` というカラム定義構文がありますが、**PostgreSQL にはそのような構文（DDL）が存在しません**。
+  PostgreSQL で DB レベルの自動更新を行うには、自前で `CREATE FUNCTION` と `CREATE TRIGGER` を書いてテーブルに仕込む必要があります。
+- **結果**:
+  DB 側にトリガーを作っていない状態で `server_onupdate` だけを指定しても、
+  1. DDL（CREATE TABLE）には何も出力されない
+  2. SQLAlchemy 側からも `updated_at = now()` は送られない
+  という状態になり、**結果として誰も更新してくれず、値が永久に変わらない** という落とし穴にハマります。
+
+---
+
+### ③ default / server_default と onupdate / server_onupdate の対比
+
+この関係性をマトリクスで整理すると、メンタルモデルが一気にクリアになります。
+
+| タイミング | アプリ/SQLAlchemy 側で実行<br>（DB 側には何も作らない） | DB 側で実行<br>（DDL に DEFAULT やトリガーが必要） |
+| :--- | :--- | :--- |
+| **INSERT 時**<br>（新規作成） | **`default=...`**<br>SQLAlchemy が INSERT 文に値を自動付加する | **`server_default=func.now()`**<br>DDL に `DEFAULT now()` が定義され、DB が補完する |
+| **UPDATE 時**<br>（更新） | **`onupdate=func.now()`**<br>SQLAlchemy が UPDATE 文に `now()` を自動付加する | **`server_onupdate=...`**<br>DB 側に事前定義されたトリガーの存在を ORM に通知する |
+
+---
+
+### ④ updated_at の推奨設計コード
+
+`updated_at` を正しく運用するには、**「新規作成時」** と **「更新時」** の両方を考慮します。
+
+```python
+updated_at: Mapped[datetime | None] = mapped_column(
+    DateTime(timezone=True),
+    server_default=func.now(),  # ① 初回 INSERT 時: DB 側で現在時刻を初期設定
+    onupdate=func.now(),        # ② UPDATE 時: SQLAlchemy が自動で now() を送る
+)
+```
+
+- **初回 INSERT 時**: `server_default=func.now()` により、DB 側で自動的に作成日時と同じ初期値が入ります（※未更新であることを明示するために初回は NULL のままにしたい仕様であれば `server_default` は省略します）。
+- **UPDATE 時**: `onupdate=func.now()` により、いずれかのカラムが更新された際に SQLAlchemy が自動で最新の `now()` を DB へ送信します。
+
