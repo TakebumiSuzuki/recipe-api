@@ -19,7 +19,7 @@ backend/
 ├── .env                    # DATABASE_URI=...
 ├── pyproject.toml
 └── app/
-    ├── __init__.py         # ← 必須（後述、これがないと app/ を sys.path に入れてしまう）
+    ├── __init__.py         # ← 必須（後述、これがないと起動時 app/ を sys.path に入れてしまう）
     ├── main.py             # FastAPI() と /health
     ├── deps.py             # get_db_session
     └── core/
@@ -51,7 +51,7 @@ postgresql + psycopg :// myuser : mypassword @ db : 5432 / mydb
    DB種類    ドライバ名   ユーザ名   パスワード      ホスト ポート  DB名
 ```
 
-- ホスト名は `db`（compose のサービス名）。`localhost` ではない。backend と db は別コンテナ。
+- ホスト名は `db`（compose のサービス名）。`localhost` ではない。
 - **SQLAlchemy だけでは DB に繋がらない**。SQLAlchemy は SQL を組み立てる係で、
   実際に PostgreSQL と通信するのは別ライブラリ（ドライバ）の仕事。
   `postgresql+psycopg` と書くなら `psycopg` パッケージが要る（`uv add "psycopg[binary]"`）。
@@ -114,13 +114,12 @@ int(result)   # TypeError: int() argument must be ... not 'CursorResult'
 ### `Depends` + `yield` の後片付け
 
 ```python
-session = SessionLocal()   # ← try の外
+session = SessionLocal()   # ← try の外。DB に繋がないので実際にはまず失敗しない。
 try:
     yield session
 finally:
     session.close()
 ```
- `SessionLocal()` は DB に繋がないので実際にはまず失敗しない。
 
 `with SessionLocal() as session: yield session` でも同じ効果が得られる。
 
@@ -156,8 +155,8 @@ class Settings(BaseSettings):
 - `database_uri` に対応する環境変数名は `DATABASE_URI`（大文字小文字は区別されない）。
 - `env_file=".env"` の相対パスは **cwd 基準**。だから `backend/` を cwd にして起動する必要がある。
 - `.env` が見つからなくても、読み込みの段階では**黙って無視される**だけでエラーにならない。
-  その後のバリデーションで必須の `database_uri` がどこにも無いと分かって初めて `ValidationError` になる。
-  つまり OS 環境変数に `DATABASE_URI` があればそのまま動く。
+  その後のインスタンス化時に、バリデーションが行われ、必須の `database_uri` がどこにも無いと分かって初めて `ValidationError` になる。
+  逆に `.env` が見つからなくても OS 環境変数に `DATABASE_URI` があればそのまま動く。
 - したがって『本番で環境変数を注入する運用』なら cwd がずれても黙って無視されるだけなので実害はない。しかし、本番でも `.env` を読ませる運用なら
   cwd 依存で落ちうるので、`env_file=Path(__file__).resolve().parents[2] / ".env"` と絶対パスにする手がある。
 
@@ -194,7 +193,7 @@ class Settings(BaseSettings):
 
 FastAPI（`fastapi dev`）や Flask（`flask run`）などで CLI コマンドを実行した際、CLI はプロジェクトのルートディレクトリを自動検出して `sys.path` に追加する。
 
-このルート判定は、**cwd（カレントワーキングディレクトリ）を基準として**以下のような決められた順番で発見したエントリーポイントのファイル（`main.py` や `app.py` など）から親ディレクトリへ遡り、`__init__.py` が切れた場所をルートとみなす、という共通の仕様で行われる。
+このルート判定は、**cwd（カレントワーキングディレクトリ）を基準として**以下のような決められた順番で発見したエントリーポイントのファイル（`main.py` や `app.py` など）から親ディレクトリへ遡り、`__init__.py` が切れた場所をルートとみなす、という共通のロジックで行われる。
 
 | ツール | ハードコードされている探索リスト |
 | :--- | :--- |
@@ -203,7 +202,7 @@ FastAPI（`fastapi dev`）や Flask（`flask run`）などで CLI コマンド�
 
 #### 今回のエラーの原因
 
-FastAPI CLI が一段深い階層にある `app/main.py` を見つけた際、`app/__init__.py` が無かったため `app/` をプロジェクトルートだと誤認して、`app/` を `sys.path` に登録してしまった。その結果、`main.py` 内の `from app.deps import ...` を解決する際にインポートのエラーが発生。
+FastAPI CLI が一段深い階層にある `app/main.py` を見つけた際、`app/__init__.py` が無かったため `app/` をプロジェクトルートだと誤認して、`app/` を `sys.path` に登録してしまった。その結果、`main.py` 内の `from app.deps import ...` を解決する際にインポートのエラーが発生した。
 
 `app/__init__.py` を空ファイルで置くだけで `app/` がパッケージと認識され、親の `backend` が正しく `sys.path` に入るため解決する（インポート文字列も `main:app` から `app.main:app` に変わる）。
 
@@ -241,5 +240,4 @@ pydantic 本家でも dataclass transform の制約で直せない既知の問�
 
 ## 未検証・未着手
 
-- DB コンテナを止めて `/health` が 500 になることの確認（Step 3 の完了条件の後半）
 - `-> dict` を `dict[str, str]` などに具体化するか（今は未定）
