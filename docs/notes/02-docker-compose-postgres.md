@@ -38,6 +38,9 @@
   実務上は扱いやすいことが多い。
 - `env_file:` の相対パスは**Composeファイルのあるディレクトリが基準**。このプロジェクトでは`docker-compose.yml` が `.devcontainer/` 内にあるので、
   同じ階層のファイルは `.env` と書く（`./.devcontainer/.env` は誤り）。
+- **環境変数の注入とVolumeマウントの順序**:
+  環境変数はイメージビルド時ではなく、**コンテナ起動時にプロセス（`ENTRYPOINT` / `docker-entrypoint.sh` = PID 1）へ注入**されて参照される。
+  起動順序は **Volumeのマウントが先 → ENTRYPOINTの実行が後**。マウント済みのデータディレクトリが空かどうかをENTRYPOINTスクリプトが判定して初期化を行うため、「初回起動時（Volumeが空の時）のみ環境変数が反映される」という仕組みになっている。
 
 ### データの永続化（ボリューム）— PostgreSQL 18 で場所が変わった
 
@@ -52,6 +55,7 @@
 volumes:
   - postgres-data:/var/lib/postgresql
 ```
+---
 
 ### ヘルスチェック
 
@@ -67,10 +71,7 @@ volumes:
 
 PostgreSQL公式のクライアントユーティリティ。`postgresql-client-18` パッケージには `psql` だけでなく
 この `pg_isready` も入っており、DB の状態確認用に使える。Docker Compose の healthcheck 機能から
-これを呼び、DB が接続を受け付けられる状態かを判定している。原文の説明:
-
-> "pg_isready is a utility for checking the connection status of a PostgreSQL database server.
-> The exit status specifies the result of the connection check."
+これを呼び、DB が接続を受け付けられる状態かを判定している。
 
 終了コードの意味:
 
@@ -184,8 +185,7 @@ depends_on:
 
 ### `docker compose up -d` を手で打つ必要がない
 
-この `docker-compose.yml` には **`backend`（devcontainer 自身）と `db` の両方**が書かれている。
-そのため VS Code で devcontainer を開く／Rebuild するだけで `docker compose up -d` 相当が済む。
+この `docker-compose.yml` には **`backend`（devcontainer 自身）と `db` の両方**が書かれており、 VS Code で devcontainer を開く／Rebuild するだけで `docker compose up -d` 相当が済む。
 
 ```
 VS Code で devcontainer を開く / Rebuild する
@@ -206,7 +206,7 @@ claude-code と db の両方が起動する
         Docker ネットワーク（Composeが自動で作る）
   ┌────────────────────────────────────────────────┐
   │                                                │
-  │  backend コンテナ          db コンテナ            │
+  │  backend コンテナ             db コンテナ         │
   │  （VS Codeがアタッチされる）                       │
   │        │                          ▲            │
   │        └── psql -h db ────────────┘            │

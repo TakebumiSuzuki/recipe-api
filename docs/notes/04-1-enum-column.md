@@ -166,7 +166,7 @@ difficulty: Mapped[Difficulty] = mapped_column(
 
 ### 既定値を4つ打ち消している
 
-| 引数 | 既定 | 指定後 |
+| 引数 | 初期値 | 指定後 |
 |---|---|---|
 | `values_callable` | 名前 `EASY` を保存 | 値 `easy` を保存 |
 | `native_enum` | `True`（PostgreSQL に `CREATE TYPE` が走る） | `False`（VARCHAR になる） |
@@ -298,6 +298,16 @@ class DifficultyType(TypeDecorator):
 
 既存の型を包んで、出入り口に変換処理を差し込む仕組み。
 宅配便で例えると、箱（`String`）はそのままで、発送時と受取時に中身を詰め替える係を付ける感じ。
+
+- **`impl = String(10)` の意味（土台の指定）**:
+  - `impl` は **implementation（実装）** の略。
+  - 「DB側での物理的な型（土台）」を指定しており、DB側はいつも通り `String(10)` から `VARCHAR(10)` のカラムを作成する（DDLにも `VARCHAR(10)` が出力される）。
+  - DB側から見ればただの `VARCHAR(10)` であり、Python側から見れば「出入り口を改造した `String(10)`」として振る舞う。
+- **バインド／リザルトプロセッサーの自作**:
+  - このクラスを書く行為は、まさに**バインドプロセッサー**と**リザルトプロセッサー**を自前で作って取り付けている状態。
+  - `process_bind_param`（**バインドプロセッサー** / 発送係）: 保存時に `Difficulty.EASY` を文字列 `'easy'` に変換して DB に渡す。
+  - `process_result_value`（**リザルトプロセッサー** / 受取係）: 取得時に DB の `'easy'` を Enum の `Difficulty.EASY` に復元する。
+  - 案B（`SAEnum`）では裏側の辞書引きで暗黙に動いていたプロセッサーの変換処理を、`TypeDecorator` では明示的な Python メソッドとして手書きできる。
 
 一点、不正値のときの例外が変わる。
 

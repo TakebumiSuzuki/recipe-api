@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import (
     CheckConstraint,
@@ -14,6 +14,7 @@ from sqlalchemy import (
 )
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.mutable import MutableDict
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
@@ -46,10 +47,12 @@ class Recipe(Base):
             native_enum=False,
             create_constraint=True,
             length=10,
-            name="difficulty_enum",
+            name="difficulty_values",
         )
     )
-    source: Mapped[dict | None] = mapped_column(JSONB())
+    source: Mapped[dict[str, Any] | None] = mapped_column(
+        MutableDict.as_mutable(JSONB())
+    )
 
     # is_published: Mapped[bool] = mapped_column(server_default=text("false"))
     published_at: Mapped[datetime | None] = mapped_column(
@@ -69,31 +72,13 @@ class Recipe(Base):
 
     __table_args__ = (
         UniqueConstraint("user_id", "title"),
+        CheckConstraint("length(trim(title)) >= 1", name="title_gte"),
         CheckConstraint("servings >= 1", name="servings_gte"),
-        CheckConstraint("length(trim(description)) <= 5000", name="description_lte"),
+        CheckConstraint("length(description) <= 5000", name="description_length_lte"),
+        CheckConstraint(
+            "description IS NULL OR length(trim(description)) >= 1",
+            name="description_not_blank",
+        ),
         CheckConstraint("cook_time_min >= 1", name="cook_time_gte"),
         Index(None, "source", postgresql_using="gin"),
     )
-
-
-"""
-recipes（レシピ）
-意図	内容
-id	主キー
-user_id	users.id への外部キー（1対多の「多」側）
-title	文字列、最大100文字
-description	説明文。長文可、未入力可
-servings	何人分か。小さい整数
-cook_time_min	調理時間（分）。小さい整数
-difficulty	easy / normal / hard のいずれか（Enum）
-is_published	公開済みか。真偽値、初期値は「非公開」
-published_on	公開日。日付のみ（時刻を持たない）、未公開なら空
-source	出典情報。JSONB、未入力可
-created_at / updated_at	タイムゾーン付き日時
-制約として次の2つを入れる。
-
-同じ投稿者が同じタイトルのレシピを2つ作れないようにする（user_id と title の複合ユニーク制約）
-cook_time_min は 1 以上（CheckConstraint）
-source を JSONB にした理由：出典はレシピによって形が違う。 「URL だけ」のこともあれば「書籍名＋著者＋ページ番号」「番組名＋放送日」のこともある。 こういう「項目が事前に決まらないデータ」を1カラムにそのまま入れられるのが JSONB。 ただし何でも JSONB に入れると検索も制約もできなくなるため、使いどころの見極めが必要になる。 （この設計が妥当かどうかは、実装時に改めて議論する）
-
-"""

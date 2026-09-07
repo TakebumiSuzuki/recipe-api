@@ -158,7 +158,7 @@ cursor.execute(
 
 `Recipe` モデルに含まれていない型（`Time`, `Float`, `Numeric`, `Uuid` など）を含めた、実務で頻出する型の通過パターン一覧です。
 
-| SQLAlchemy 型 | Python 想定型 | ③ 書き込み時<br>(bind_processor) | ④ DBAPI (psycopg)<br>の役割 | ⑤ 読み取り時<br>(result_processor) | ⑥ PostgreSQL 型 | 主な用途・備考 |
+| SQLAlchemy 型 | Python 想定型 | 書き込み時<br>(bind_processor) | DBAPI (psycopg)<br>の役割 | 読み取り時<br>(result_processor) | PostgreSQL 型 | 主な用途・備考 |
 |---|---|---|---|---|---|---|
 | `Integer` / `BigInteger` | `int` | 素通り | `int` ⇄ 整数バイナリ | 素通り | `integer` / `bigint` | ID、個数、カウント |
 | `Float` | `float` | 素通り | `float` ⇄ 浮動小数点数 | 素通り | `double precision` | 科学計算、緯度経度 |
@@ -184,8 +184,8 @@ cursor.execute(
 1. **「列の型」を意識するのは SQLAlchemy と PostgreSQL だけ**
    中間にいるドライバ（psycopg）は列の定義を知りません。文脈に応じた状況判断は一切行わず、書き込み時は「値の Python 型」、読み取り時は「DB から通知された型 OID」に基づく**静的な変換テーブル（辞書）を機械的に通しているだけの層**です。
 
-2. **SQLAlchemy が手を入れるのは「psycopg が扱えない型」だけ**
-   `Integer` や `String` などの基本型は、SQLAlchemy を素通りして psycopg へ直行します。逆に `JSONB` や `Enum` のように psycopg にそのまま渡せない型だけ、SQLAlchemy の `bind_processor` が間に入って交通整理をします。
+2. **SQLAlchemy が手を入れるのは、限られた場面だけ**
+   `Integer` や `String` などの基本型は、SQLAlchemy を素通りして psycopg へ直行します。SQLAlchemy の `bind_processor` が間に入るのは、**psycopg にそのまま渡せない型の変換（JSONB → JSON 文字列、Enum → 文字列）** と、**値の正当性の検証（Boolean）** に限られます。
 
 3. **読み取りの主役は psycopg**
    DB から型情報が届くため、値の復元は psycopg の層でほぼ完了しています。SQLAlchemy は最後に Enum などの Python 固有オブジェクトに仕立て直すだけです。

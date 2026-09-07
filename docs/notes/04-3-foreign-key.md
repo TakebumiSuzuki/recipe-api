@@ -110,9 +110,8 @@ RESTRICT | CASCADE | SET NULL | SET DEFAULT | NO ACTION
 1. **DB（PostgreSQL）側が「主」、ORM（SQLAlchemy）側は「従」**
    データの整合性を保証する最後の砦は DB エンジン。まず要件に合わせて DB 側の `ondelete` を決め、ORM 側はその決定に機械的に合わせるだけにする。
 2. **`passive_deletes=True` を事実上のデフォルトにする**
-   SQLAlchemy の既定値（`passive_deletes=False`）は、20年前の「外部キー機能がない古代のDB」のための遺物。現代のまともな RDBMS を使う場合、**常に `passive_deletes=True` を指定して、後始末を DB エンジンに 100% 丸投げ**する。
-
-これにより、**すべてのパターンで発行される SQL が「親の DELETE 1本」に統一**され、裏で勝手に走る事前クエリやデッドロックが完全に排除される。
+   SQLAlchemy の既定値（`passive_deletes=False`）は、親の削除時に**未ロードの子を SELECT で全件取得**してから処理する。`passive_deletes=True` にすると、この事前 SELECT が省略され、**未ロード分の後始末は DB エンジンに任せる**ことができる。
+   ただし、**ロード済みの子に対しては `passive_deletes=True` でも通常通り cascade 処理が走る**（DELETE や UPDATE SET NULL などが発行される）。
 
 ---
 
@@ -137,11 +136,12 @@ RESTRICT | CASCADE | SET NULL | SET DEFAULT | NO ACTION
 
 * **実行時の動作（時系列）**
   ```text
-  session.delete(user)   ──①【メモリ】親・ロード済みの子に「削除予定」フラグ（SQLは出ない）
-        │
-  session.flush()        ──②【SQL発行】親の DELETE 1本のみを DB へ送信
+  session.delete(user)   ──①【メモリ】親に「削除予定」フラグ。ロード済みの子にも削除フラグ（SQLは出ない）
+        │                     ※ 未ロードの子は SELECT せず放置
+  session.flush()        ──②【SQL発行】ロード済みの子に DELETE → 親に DELETE を送信
+        │                     └─ DELETE FROM recipes WHERE recipes.id IN (...);
         │                     └─ DELETE FROM users WHERE users.id = 1;
-    [PostgreSQL]         ──③【DB内部】ON DELETE CASCADE が発動し、子を一撃道連れ削除
+    [PostgreSQL]         ──③【DB内部】ON DELETE CASCADE が発動し、未ロードだった子を削除
         │
   session.commit()       ──④【確定・解放】DBコミット完了 ＆ メモリから安全に破棄
   ```
@@ -165,11 +165,12 @@ RESTRICT | CASCADE | SET NULL | SET DEFAULT | NO ACTION
 
 * **実行時の動作（時系列）**
   ```text
-  session.delete(user)   ──①【メモリ】親だけに「削除予定」フラグ（子には触らない / SQLは出ない）
-        │
-  session.flush()        ──②【SQL発行】親の DELETE 1本のみを DB へ送信
+  session.delete(user)   ──①【メモリ】親に「削除予定」フラグ。ロード済みの子の FK を None に設定
+        │                     ※ 未ロードの子は SELECT せず放置
+  session.flush()        ──②【SQL発行】ロード済みの子に UPDATE SET NULL → 親に DELETE を送信
+        │                     └─ UPDATE recipes SET user_id = NULL WHERE ...;
         │                     └─ DELETE FROM users WHERE users.id = 1;
-    [PostgreSQL]         ──③【DB内部】子が残っているため外部キー制約違反でクエリ拒絶！
+    [PostgreSQL]         ──③【DB内部】未ロードの子が残っているため外部キー制約違反でクエリ拒絶！
         │
       [Error]           ──④【安全停止】IntegrityError でロールバック（親も子も無傷で残る）
   ```
@@ -193,11 +194,12 @@ RESTRICT | CASCADE | SET NULL | SET DEFAULT | NO ACTION
 
 * **実行時の動作（時系列）**
   ```text
-  session.delete(user)   ──①【メモリ】親だけに「削除予定」フラグ（子には触らない / SQLは出ない）
-        │
-  session.flush()        ──②【SQL発行】親の DELETE 1本のみを DB へ送信
+  session.delete(user)   ──①【メモリ】親に「削除予定」フラグ。ロード済みの子の user_id を None に設定
+        │                     ※ 未ロードの子は SELECT せず放置
+  session.flush()        ──②【SQL発行】ロード済みの子に UPDATE SET NULL → 親に DELETE を送信
+        │                     └─ UPDATE recipes SET user_id = NULL WHERE ...;
         │                     └─ DELETE FROM users WHERE users.id = 1;
-    [PostgreSQL]         ──③【DB内部】ON DELETE SET NULL が発動し、子の user_id を NULL 更新
+    [PostgreSQL]         ──③【DB内部】ON DELETE SET NULL が発動し、未ロードだった子の user_id を NULL 更新
         │
   session.commit()       ──④【確定・解放】DBコミット完了 ＆ 親をメモリから安全に破棄（子は残る）
   ```
@@ -224,14 +226,17 @@ RESTRICT | CASCADE | SET NULL | SET DEFAULT | NO ACTION
 
 * **実行時の動作（時系列）**
   ```text
-  session.delete(user)   ──①【メモリ】親だけに「削除予定」フラグ（子には触らない / SQLは出ない）
-        │
-  session.flush()        ──②【SQL発行】親の DELETE 1本のみを DB へ送信
+  session.delete(user)   ──①【メモリ】親に「削除予定」フラグ。ロード済みの子の user_id を None に設定
+        │                     ※ 未ロードの子は SELECT せず放置
+  session.flush()        ──②【SQL発行】ロード済みの子に UPDATE SET NULL → 親に DELETE を送信
+        │                     └─ UPDATE recipes SET user_id = NULL WHERE ...;
         │                     └─ DELETE FROM users WHERE users.id = 1;
-    [PostgreSQL]         ──③【DB内部】ON DELETE SET DEFAULT が発動し、子の user_id を初期値に更新
+    [PostgreSQL]         ──③【DB内部】ON DELETE SET DEFAULT が発動し、未ロードだった子の user_id を初期値に更新
         │
   session.commit()       ──④【確定・解放】DBコミット完了 ＆ 親をメモリから安全に破棄（子は残る）
   ```
+  > **⚠ 注意：ロード済み子と未ロード子で DB 上の値が異なる**
+  > ②でロード済みの子は SQLAlchemy により `user_id = NULL` に更新されるが、③で未ロードの子は DB により `user_id = デフォルト値` に更新される。結果として、同じテーブル内で FK の値が `NULL` と `デフォルト値` に分かれる不整合が生じる。SET DEFAULT を使う場合はこの点に注意が必要。
 
 ---
 
@@ -254,10 +259,13 @@ RESTRICT | CASCADE | SET NULL | SET DEFAULT | NO ACTION
 
 | パターン | DB (`ondelete`) | カラム型 | `relationship()` 側の記述 | 発行されるSQL | DB側の連動処理 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **1. CASCADE** | `CASCADE` | `Mapped[int]` | `cascade="all, delete-orphan", passive_deletes=True` | `DELETE FROM users ...`（1本） | 子も一緒に DELETE |
-| **2. RESTRICT** | `RESTRICT` | `Mapped[int]` | `passive_deletes=True` | `DELETE FROM users ...`（1本） | 制約違反エラーで拒絶（保護） |
-| **3. SET NULL** | `SET NULL` | `Mapped[int \| None]` | `passive_deletes=True` | `DELETE FROM users ...`（1本） | 子の FK を `NULL` に更新 |
-| **4. SET DEFAULT**| `SET DEFAULT` | `Mapped[int]` | `passive_deletes=True` | `DELETE FROM users ...`（1本） | 子の FK を初期値に更新 |
+| **1. CASCADE** | `CASCADE` | `Mapped[int]` | `cascade="all, delete-orphan", passive_deletes=True` | ロード済み子の DELETE + 親の DELETE | 未ロード子を道連れ DELETE |
+| **2. RESTRICT** | `RESTRICT` | `Mapped[int]` | `passive_deletes=True` | ロード済み子の UPDATE SET NULL + 親の DELETE | 未ロード子が残っていれば拒絶 |
+| **3. SET NULL** | `SET NULL` | `Mapped[int \| None]` | `passive_deletes=True` | ロード済み子の UPDATE SET NULL + 親の DELETE | 未ロード子の FK を NULL 更新 |
+| **4. SET DEFAULT**| `SET DEFAULT` | `Mapped[int]` | `passive_deletes=True` | ロード済み子の UPDATE SET NULL + 親の DELETE | 未ロード子の FK を初期値に更新 |
+
+> **補足：`passive_deletes="all"` について**
+> `passive_deletes="all"` にすると、ロード済みの子に対しても一切の cascade 処理をスキップし、親の DELETE 1本だけを発行する。しかし、Session 内のロード済み子オブジェクトに削除/更新フラグが立たないため、commit 後にそれらにアクセスすると `ObjectDeletedError` などの不整合が起きうる。Session の整合性を自動で保てる `passive_deletes=True` が推奨。
 
 ---
 

@@ -160,9 +160,10 @@ SQLAlchemy でどう書くか（`mapped_column` の引数など）はモデル�
 制約として次の内容を入れる。
 
 - `name` は空白を除いて 2 文字以上（CheckConstraint: `length(trim(name)) >= 2`）
-- `bio` は空白を除いて 1000 文字以下（CheckConstraint: `length(trim(bio)) <= 1000`）
-- `email` は簡易正規表現によるメール形式チェック（CheckConstraint: `email ~ '^.+@.+$'`）
-- `email` は小文字であること（CheckConstraint: `email = lower(email)`）
+- `bio` は 1000 文字以下（CheckConstraint: `length(bio) <= 1000`）
+- `bio` は空白のみ不可（CheckConstraint: `bio IS NULL OR length(trim(bio)) >= 1`）
+- `email` は簡易正規表現によるメール形式チェック（CheckConstraint: `email ~ '^[^@]+@[^@]+\.[^@]+$'`）
+- `email` は小文字であること（CheckConstraint: `email = lower(email)`、制約名: `email_lowercase`）
 - `email` は重複禁止（一意制約）
 
 > レシピとのリレーションには `passive_deletes=True` を設定する（投稿者が削除された場合、レシピ側の `user_id` は DB の `ON DELETE SET NULL` により `NULL` に更新され、レシピ自体は保持される）。
@@ -181,7 +182,7 @@ SQLAlchemy でどう書くか（`mapped_column` の引数など）はモデル�
 | `description` | 説明文。長文可（Text）、未入力可 |
 | `servings` | 何人分か。整数 |
 | `cook_time_min` | 調理時間（分）。整数 |
-| `difficulty` | `easy` / `normal` / `hard` のいずれか（Enum: `difficulty_enum`） |
+| `difficulty` | `easy` / `normal` / `hard` のいずれか（非ネイティブ Enum: VARCHAR + CHECK制約 `difficulty_values`） |
 | `source` | 出典情報。JSONB、未入力可 |
 | `published_at` | 公開日時。**タイムゾーン付き日時**、未公開なら空（NULL） |
 | `created_at` / `updated_at` | タイムゾーン付き日時。作成時・更新時に自動設定 |
@@ -189,8 +190,10 @@ SQLAlchemy でどう書くか（`mapped_column` の引数など）はモデル�
 制約・インデックスとして次の内容を入れる。
 
 - 同じ投稿者が同じタイトルのレシピを2つ作れないようにする（`user_id` と `title` の複合ユニーク制約）
+- `title` は空白を除いて 1 文字以上（CheckConstraint: `length(trim(title)) >= 1`）
 - `servings` は 1 以上（CheckConstraint: `servings >= 1`）
-- `description` は空白を除いて 5000 文字以下（CheckConstraint: `length(trim(description)) <= 5000`）
+- `description` は 5000 文字以下（CheckConstraint: `length(description) <= 5000`）
+- `description` は空白のみ不可（CheckConstraint: `description IS NULL OR length(trim(description)) >= 1`）
 - `cook_time_min` は 1 以上（CheckConstraint: `cook_time_min >= 1`）
 - `source` に GIN インデックスを設定
 - `user_id` は外部キー削除時に `SET NULL`（`ondelete="SET NULL"`）
