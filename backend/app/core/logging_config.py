@@ -5,10 +5,12 @@
 import logging.config
 from pathlib import Path
 
+from app.core.config import get_settings
+
 
 def setup_logging():
     # __file__ を使って、このファイル自身の絶対パスを取得し、そこから基準ディレクトリを決定する
-    base_dir = Path(__file__).resolve().parent.parent
+    base_dir = Path(__file__).resolve().parent.parent.parent
 
     # ログディレクトリを絶対パスで指定
     log_dir = base_dir / "logs"
@@ -59,17 +61,30 @@ def setup_logging():
             # 実質的に、全てのライブラリ内に設定されている、全てのロガーのログ受付レベルを'INFO'にしている。
             # また、ハンドラについては、アプリケーション全体のログ出力場所として、ここだけに設定している。
             "": {
-                "level": "INFO",
+                "level": "WARNING",
                 "handlers": ["console", "file"],
             },
-            # 自分のアプリ(my_app階層)だけを「特別扱い」する設定（例外）。flask runコマンドを必ず backend/ で実行する
+            # 自分のアプリ(app階層)だけを「特別扱い」する設定（例外）。flask runコマンドを必ず backend/ で実行する
             # という前提、つまり　backend/ が sys.path に含まれるという前提なので、"src"は必ずパッケージになる。
-            # よって、"my_app"の部分を "src" にしても問題ない。しかしここでは、一応、一つのテクニックとして
-            # 自分が書いたアプリケーションコードと外部ライブラリのコードを区別する手法の例として"my_app"としている。
             # ルートの'INFO'設定を上書きし、'DEBUG'レベルまで詳細なログを許可。
             # ハンドラは設定せず、ログをルートに伝播させて処理を任せる。(propagate の設定はデフォルトで True)
-            "my_app": {
+            "app": {
                 "level": "DEBUG",
+            },
+            "sqlalchemy.engine": {
+                "level": "INFO" if get_settings().sql_echo else "WARNING",
+                "handlers": ["console"],
+                "propagate": False,
+            },
+            "uvicorn": {
+                "level": "INFO",
+                "handlers": ["console", "file"],
+                "propagate": False,
+            },
+            "uvicorn.access": {
+                "level": "INFO",
+                "handlers": ["console"],
+                "propagate": False,
             },
         },
     }
@@ -80,7 +95,7 @@ def setup_logging():
 
     # このモジュールの __name__ の値は、 "src.logging_config" になる。
     # よって、以下のコードで、"my_app.src.logging_config"という名前のloggerがインスタンス化される
-    logger = logging.getLogger(f"my_app.{__name__}")
+    logger = logging.getLogger(__name__)
     logger.info(
         f"ロギング設定が完了しました。このモジュールの__name__属性は: {__name__}"
     )

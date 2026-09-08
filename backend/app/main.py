@@ -4,8 +4,10 @@ from fastapi import Depends, FastAPI
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.core.logging_config import setup_logging
 from app.deps import get_db_session
 
+setup_logging()
 app = FastAPI()
 
 

@@ -411,11 +411,20 @@ SQLAlchemy 側では `relationship()` に「1件しか返さない」設定を�
 
 #### Step 6. ロギングを設定する
 
-- **ねらい**：アプリのログと uvicorn のログを、同じ形式で1か所に出す
+- **ねらい**：以下 3 種類のログを、同じフォーマット（日時・ロガー名・レベル・メッセージ）で統一して stdout（コンソール）に流す
+  1. **アプリ独自のログ** (`app.*`): 各エンドポイントやビジネスロジックで書いたログ
+  2. **SQLAlchemy の SQL ログ** (`sqlalchemy.engine`): 実際に DB へ発行された SQL（例: `SELECT 1`）
+  3. **Uvicorn のアクセスログ** (`uvicorn.access`): HTTP 通信の記録（例: `GET /health ... 200 OK`）
+- **目指す出力イメージ (stdout)**：
+  ```text
+  2026-09-08 16:30:01 - app.api.v1.health        - INFO - ヘルスチェックが呼ばれました
+  2026-09-08 16:30:01 - sqlalchemy.engine.Engine - INFO - SELECT 1
+  2026-09-08 16:30:01 - uvicorn.access           - INFO - 127.0.0.1:54321 - "GET /health HTTP/1.1" 200 OK
+  ```
 - **やること**：
   - `dictConfig`（辞書でログ設定を書く Python 標準のやり方）で設定を1ファイルにまとめる
   - 自分のアプリ用のロガーと、uvicorn のロガーの書式を揃える
-  - **SQLAlchemy が発行する SQL をログに出す設定**を、環境変数で切り替えられるようにする
+  - **SQLAlchemy が発行する SQL をログに出す設定**を、環境変数で切り替えられるようにする（`Settings.sql_echo`）
 - **終わったと言える状態**：`/health` を叩くと、アクセスログと `SELECT 1` の両方が同じ形式で出る
 - **なぜ今か**：第5段階の N+1 対策で「SQL が何本飛んだか」を数えることになる。
   そのとき使うのがこのログ
