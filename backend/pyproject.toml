@@ -80,7 +80,9 @@ prepend_sys_path = [
 # output_encoding = "utf-8"
 
 # This section defines scripts or Python functions that are run
-# on newly generated revision scripts. 
+# on newly generated revision scripts.
+# TOML のルール: 二重の括弧 [[table_array]] → 辞書の「配列（リスト）」
+# (ruff-check と ruff-format という 2つのフックをリスト（配列）として登録したいので)
 [[tool.alembic.post_write_hooks]]
 name = "ruff-check"
 type = "exec"
