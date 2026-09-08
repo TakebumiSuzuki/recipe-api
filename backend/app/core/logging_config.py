@@ -1,6 +1,8 @@
-# このアプリは、backend/で flask run することを前提としている。flask はこの階層を基準に、FLASK_APP=src:create_app
-# 設定を見て create_app を見つけ、さらに、このときの cwd つまり、backend/ が flask によって sys.path に登録される。
-# その結果、srcが一つのパッケージとして認識され、それに含まれる各モジュールの __name__ は src を基点とする文字列になる。
+# このアプリは、backend/で fastapi dev することを前提としている。fastapi dev コマンドはこの階層を基準に、
+# 決められた順序(main.py → app.py → app/main.py などの候補リスト順)で階層をたどり、app/main.py を見つける。
+# また、この階層から __init__.py の有無を親にのぼりながら検証することにより、結果的に backend/ が
+# fastapi dev コマンド によって sys.path に登録される。また、Uvicorn に渡す文字列（app.main:appなど）を完成させる。
+# app/ は一つのパッケージとして認識され、それに含まれる各モジュールの __name__ は app. からの文字列になる。
 # そして、各モジュールで getLogger(__name__) と書く慣例により、logging の階層がモジュール階層と一致する。
 import logging.config
 from pathlib import Path
@@ -21,7 +23,7 @@ def setup_logging():
     logging_config = {
         "version": 1,
         # disable_existing_loggers: True に設定すると、dictConfigが実行された時点で既に存在していたロガー
-        # （例：sqlalchemyやstreamlitなど）の disabled という内部的なフラグが True に設定されます。
+        # （例：fastapi や sqlalchemy など）の disabled という内部的なフラグが True に設定されます。
         # このフラグが True になったロガーは、ログレベルに関係なく、すべてのログメッセージを破棄します。
         # これは、エラー（ERROR）や致命的な（CRITICAL）レベルのログであっても機能しなくなる。
         # つまり、単にレベル設定を無効化するというものではなく、ロガーの機能そのものを完全に停止させるという強力な設定
@@ -59,28 +61,33 @@ def setup_logging():
         "loggers": {
             # ルートロガー: アプリで使われている全てのロガーに対し、どのレベル以上のログが受付け可能か、というグローバルな設定
             # 実質的に、全てのライブラリ内に設定されている、全てのロガーのログ受付レベルを'INFO'にしている。
-            # また、ハンドラについては、アプリケーション全体のログ出力場所として、ここだけに設定している。
             "": {
                 "level": "WARNING",
                 "handlers": ["console", "file"],
             },
-            # 自分のアプリ(app階層)だけを「特別扱い」する設定（例外）。flask runコマンドを必ず backend/ で実行する
-            # という前提、つまり　backend/ が sys.path に含まれるという前提なので、"src"は必ずパッケージになる。
-            # ルートの'INFO'設定を上書きし、'DEBUG'レベルまで詳細なログを許可。
+            # 自分のアプリ(app階層)だけを「特別扱い」する設定（例外）。fastapi dev コマンドを必ず backend/ で実行する
+            # という前提、つまり　backend/ が sys.path に含まれるという前提なので、"app"は必ずパッケージになる。
+            # ルートの設定を上書きし、'DEBUG'レベルまで詳細なログを許可。
             # ハンドラは設定せず、ログをルートに伝播させて処理を任せる。(propagate の設定はデフォルトで True)
             "app": {
                 "level": "DEBUG",
             },
+            # 環境変数 SQL_ECHO に応じて SQL ログの出力レベルを切り替える
+            # - DEBUG  : SQL文とパラメータに加え、取得結果（全行データ）まで詳細に出力
+            # - INFO   : 発行されたSQL文とパラメータを出力（SQL_ECHO=True のとき）
+            # - WARNING: 通常のSQL文は出力せず警告・エラーのみ（SQL_ECHO=False のとき）
             "sqlalchemy.engine": {
                 "level": "INFO" if get_settings().sql_echo else "WARNING",
                 "handlers": ["console"],
                 "propagate": False,
             },
+            # サーバーの起動・停止やライフサイクル、サーバーエラー等の稼働ログ（ファイルにも記録）
             "uvicorn": {
                 "level": "INFO",
                 "handlers": ["console", "file"],
                 "propagate": False,
             },
+            # クライアントからのHTTPリクエスト（アクセス）ごとのログ（流量が多いためコンソールのみ）
             "uvicorn.access": {
                 "level": "INFO",
                 "handlers": ["console"],
@@ -89,25 +96,25 @@ def setup_logging():
         },
     }
 
-    # 以下が実行された時点で、ルートlogger ""と"my_app" loggerの両方がインスタンス化されている状態になる。
+    # 以下が実行された時点で、ルートlogger ""と"app" などの logger がインスタンス化されている状態になる。
     # ただし、正確にいうと、ルートlogger "" のほうは、import logging の時点でインスタンス化されている。
     logging.config.dictConfig(logging_config)
 
-    # このモジュールの __name__ の値は、 "src.logging_config" になる。
-    # よって、以下のコードで、"my_app.src.logging_config"という名前のloggerがインスタンス化される
+    # このモジュールの __name__ の値は、 "app.core.logging_config" になる。
+    # よって、以下のコードで、同名のloggerがインスタンス化される
     logger = logging.getLogger(__name__)
-    logger.info(
-        f"ロギング設定が完了しました。このモジュールの__name__属性は: {__name__}"
-    )
+    logger.info(f"Logging configuration completed. Module __name__: {__name__}")
 
 
 """
-sys.path には、通常、
-1. 標準ライブラリパス(インタープリタに紐づくlibのパス、つまり /usr/lib/python3.x/など)
-2. pip installの場所(/usr/lib/python3.x/site-packages/ など)
-3. 環境変数で指定した、PYTHONPATH
-4. 実行したスクリプトのディレクトリ
-などが入る。しかし、flask run をすると、flaskの仕様により、CWDも自動的に加えられるようになっている。
+sys.path には、通常、以下の優先順位（先頭から探索される順）でパスが入る:
+1. 実行したスクリプトのディレクトリ（または対話モード・-c 実行時のカレントディレクトリ CWD）
+2. 環境変数で指定した PYTHONPATH
+3. 標準ライブラリパス（インタープリタに紐づく lib のパス、つまり /usr/lib/python3.x/ など）
+4. pip install の場所（/usr/lib/python3.x/site-packages/ など）
+
+なお、fastapi dev（または flask run）などのコマンドを実行すると、コマンド内の実装により、
+プロジェクトの基準ディレクトリ（CWD 等）が sys.path の先頭（インデックス 0）に自動的に追加される。
 """
 
 """

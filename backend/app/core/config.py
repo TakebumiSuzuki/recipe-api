@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env")
     database_uri: str
     sql_echo: bool = False
+    test_database_uri: str = ""
 
 
 @cache

@@ -76,12 +76,6 @@ Uvicorn は単なる部品ライブラリではなく、「コマンドライン
     },
 }
 ```
-
-> [!IMPORTANT]
-> **`"disable_existing_loggers": False` の必須性**:
-> `dictConfig` のデフォルトは `disable_existing_loggers: True`（設定適用前に存在していたロガーを全停止する）である。
-> これを `False` にしておかないと、Uvicorn のロガー自体が無効化されて動かなくなる。必ず `False` を明示する。
-
 ---
 
 ## 4. SQLAlchemy の SQL ログと `echo=True` の罠
@@ -89,8 +83,8 @@ Uvicorn は単なる部品ライブラリではなく、「コマンドライン
 ### (1) SQLAlchemy 内部のロギング仕様
 SQLAlchemy は、接続（psycopg等）を介して SQL を実行する際、**常に無条件で内部ロガー `sqlalchemy.engine.Engine` に対して `INFO` レベルで SQL 文を送信** している。
 
+- **`DEBUG` レベル**: 発行された SQL 文に加え、DB からフェッチされた全行データまで詳細に出力される。
 - **`INFO` レベル**: 発行された SQL 文とパラメータが出力される。
-- **`DEBUG` レベル**: SQL 文に加え、DB からフェッチされた全行データまで詳細に出力される。
 - **`WARNING` レベル**: 通常の SQL は出力せず、警告・エラーのみ出力される。
 
 ### (2) `create_engine(..., echo=True)` の罠（二重出力）
@@ -120,131 +114,3 @@ SQLAlchemy は、接続（psycopg等）を介して SQL を実行する際、**�
 },
 ```
 
----
-
-## 5. 自作アプリ (`app.*`) の階層化とログ伝播 (`propagate`)
-
-### (1) 最上位パッケージ `app`
-`backend` をカレントディレクトリとしてアプリを実行するため、自作モジュールはすべて最上位パッケージ `app` 配下となる（例: `app.models.user`）。
-
-### (2) ルートロガーと `app` の住み分け
-- **ルートロガー (`""`)**:
-  - `level: "WARNING"` に設定。予期せぬサードパーティ製ライブラリの不要な INFO ログ（ノイズ）を遮断する。
-  - 出力先として `["console", "file"]`（コンソールと `logs/app.log`）を集約保持する。
-- **自作アプリ (`"app"`)**:
-  - `level: "DEBUG"` に設定し、個別ハンドラは指定せず **`propagate: True`（デフォルト）のままルートへ伝播** させる。
-  - これにより、自作アプリのコードで `logger.debug()` や `logger.info()` を呼ぶだけで、自動的に画面とファイルの両方へ統一書式で記録される。
-
----
-
-## 6. 全体の接続・コードまとめ
-
-### ① `app/core/config.py` (設定の定義)
-```python
-from functools import cache
-from pydantic_settings import BaseSettings, SettingsConfigDict
-
-
-class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env")
-    database_uri: str
-    sql_echo: bool = False  # 環境変数 SQL_ECHO で切り替え可能（デフォルト False）
-
-
-@cache
-def get_settings() -> Settings:
-    return Settings()  # type: ignore[call-arg]
-```
-
-### ② `app/core/db.py` (DB接続定義)
-```python
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from app.core.config import get_settings
-
-# echo は渡さない（ロガー側で統一制御するため）
-engine = create_engine(url=get_settings().database_uri)
-
-SessionLocal = sessionmaker(
-    autoflush=False,
-    bind=engine,
-)
-```
-
-### ③ `app/core/logging_config.py` (ロギング中央管理)
-```python
-import logging.config
-from pathlib import Path
-from app.core.config import get_settings
-
-
-def setup_logging():
-    base_dir = Path(__file__).resolve().parent.parent.parent
-    log_dir = base_dir / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
-
-    settings = get_settings()
-
-    logging_config = {
-        "version": 1,
-        "disable_existing_loggers": False,  # 既存ロガーを破棄せず上書きする
-        "formatters": {
-            "default": {
-                "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-                "datefmt": "%Y-%m-%d %H:%M:%S",
-            },
-            "detailed": {
-                "format": "%(asctime)s - %(name)s:%(funcName)s:%(lineno)d - %(levelname)s - %(message)s",
-            },
-        },
-        "handlers": {
-            "console": {
-                "class": "logging.StreamHandler",
-                "level": "DEBUG",
-                "formatter": "default",
-            },
-            "file": {
-                "class": "logging.handlers.RotatingFileHandler",
-                "level": "DEBUG",
-                "formatter": "detailed",
-                "filename": str(log_dir / "app.log"),
-                "maxBytes": 1024 * 1024 * 5,  # 5 MB
-                "backupCount": 3,
-                "encoding": "utf-8",
-            },
-        },
-        "loggers": {
-            # ルート: 未知の外部ライブラリのノイズを防ぐため WARNING
-            "": {
-                "level": "WARNING",
-                "handlers": ["console", "file"],
-            },
-            # 自作アプリ: DEBUG まで許可し、ルートに任せて画面とファイル両方に出力
-            "app": {
-                "level": "DEBUG",
-            },
-            # SQLAlchemy: 環境変数 sql_echo に応じて SQL の表示/非表示を切り替え
-            "sqlalchemy.engine": {
-                "level": "INFO" if settings.sql_echo else "WARNING",
-                "handlers": ["console"],
-                "propagate": False,
-            },
-            # Uvicorn (サーバーログ): 障害調査のため画面とファイル両方に出力
-            "uvicorn": {
-                "level": "INFO",
-                "handlers": ["console", "file"],
-                "propagate": False,
-            },
-            # Uvicorn (アクセスログ): 独自フォーマットを打ち消し、共通 console ハンドラを適用
-            "uvicorn.access": {
-                "level": "INFO",
-                "handlers": ["console"],
-                "propagate": False,
-            },
-        },
-    }
-
-    logging.config.dictConfig(logging_config)
-    logger = logging.getLogger(__name__)
-    logger.info(f"ロギング設定が完了しました。モジュール: {__name__}")
-```
