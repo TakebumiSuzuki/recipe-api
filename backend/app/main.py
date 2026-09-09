@@ -6,9 +6,12 @@ from sqlalchemy.orm import Session
 
 from app.core.logging_config import setup_logging
 from app.deps import get_db_session
+from app.routes.users import router as users_router
 
 setup_logging()
 app = FastAPI()
+
+app.include_router(users_router)
 
 
 @app.get("/health")

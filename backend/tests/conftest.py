@@ -30,11 +30,28 @@ def setup_test_db(engine: Engine) -> Generator[None]:
     Base.metadata.drop_all(bind=engine)
 
 
+# @pytest.fixture()
+# def db_session(SessionLocal: sessionmaker[Session]) -> Generator[Session]:
+#     db_session = SessionLocal()
+#     yield db_session
+#     db_session.close()
+
+
 @pytest.fixture()
-def db_session(SessionLocal: sessionmaker[Session]) -> Generator[Session]:
-    db_session = SessionLocal()
-    yield db_session
-    db_session.close()
+def db_session(engine: Engine) -> Generator[Session]:
+    connection = engine.connect()
+    transaction = connection.begin()
+
+    session = Session(
+        bind=connection,
+        join_transaction_mode="create_savepoint",
+    )
+
+    yield session
+
+    session.close()
+    transaction.rollback()
+    connection.close()
 
 
 @pytest.fixture()
