@@ -168,3 +168,261 @@ def test_client(db_session: Session):
         # 他のテストに影響を与えないようクリア
         app.dependency_overrides.clear()
 ```
+
+---
+
+## 5. テスト用データベース（`test_db`）の作成
+
+### なぜ作成が必要なのか？
+1. **`conftest.py` は DB そのものは作らない**  
+   `create_engine(url=...)` は既存の DB への接続設定を行っているだけで、PostgreSQL サーバー内にデータベース自体を作成するわけではない。
+2. **Docker Compose の初期化仕様**  
+   PostgreSQL 公式イメージは、初回起動時に環境変数 `POSTGRES_DB` で指定されたデータベース（本環境では `mydb`）を 1 つだけ自動作成する。そのため、`test_db` は自動では作成されず、存在しない状態で接続すると `database "test_db" does not exist` エラーになる。
+
+---
+
+### テスト用 DB を作る 2 つの方法
+
+#### 方法 1: ターミナルから手動で作成（一番手軽）
+`psql` コマンドから SQL（`CREATE DATABASE`）を発行して作成する（実行時にパスワード `mypassword` を入力）。
+```bash
+psql -h db -U myuser -d mydb -c "CREATE DATABASE test_db;"
+```
+* **メリット**: コマンド 1 行ですぐに作れる。
+* **注意点**: ボリューム（`postgres-data`）を破棄・再作成した際は、再度実行が必要。
+
+#### 方法 2: Docker 初回起動時に自動作成（恒久的な仕組み）
+PostgreSQL 公式イメージの「`/docker-entrypoint-initdb.d/` 配下のスクリプトを初回起動時に自動実行する」機能を利用する。
+
+1. **フォルダと SQL ファイルを作成**  
+   `.devcontainer/initdb.d/01-create-test-db.sql` を作成：
+   ```sql
+   CREATE DATABASE test_db;
+   GRANT ALL PRIVILEGES ON DATABASE test_db TO myuser;
+   ```
+2. **`docker-compose.yml` でフォルダごとバインドマウント**
+   ```yaml
+     db:
+       image: postgres:18-trixie
+       ...
+       volumes:
+         - postgres-data:/var/lib/postgresql
+         - ./initdb.d:/docker-entrypoint-initdb.d:ro
+   ```
+   * **相対パス**: `./initdb.d` は `docker-compose.yml` が置かれている場所（`.devcontainer/`）が起点。
+   * **`.d` の意味**: Linux 慣習の `directory` の略。コンテナ側の公式マウント先（`/docker-entrypoint-initdb.d/`）に合わせて命名。
+   * **フォルダマウントの利点**: 単一ファイルではなくフォルダ単位でマウントすることで、今後初期化スクリプトが増えても compose ファイルを弄らずに追加できる。
+   * **`01-` の理由**: PostgreSQL はファイルを名前順（アルファベット順）に実行するため、スクリプトが複数になった際の実行順序を保証するお作法。
+3. **既存環境への反映（Docker Desktop の GUI 操作）**  
+   初期化スクリプトは「ボリュームが空の初回起動時」にしか走らないため、既存環境に反映させる場合は Docker Desktop から安全にリセットする：
+   1. Docker Desktop の **Containers** で `db` コンテナのみ削除（ゴミ箱）。
+   2. **Volumes** で `...postgres-data` ボリュームのみ削除（※ `claude-state` 等は触らない）。
+   3. VS Code を再起動（またはウィンドウ再読込）すると、`db` だけが新規作成され、スクリプトが自動実行される。
+
+---
+
+## 6. pytest Fixture のライフサイクルと設計の深掘り
+
+### (1) 各コンポーネントのライフサイクルと対応関係
+
+テスト環境における各オブジェクトの生存期間（ライフサイクル）は、以下のように整理される。
+
+| コンポーネント | ライフサイクル | 説明 |
+| :--- | :--- | :--- |
+| **Database（DB コンテナ）** | **Docker コンテナと同じ** | コンテナが起動している間ずっと存続。 |
+| **`app`, `engine`, `SessionLocal`** | **pytest セッションと同じ** | pytest 実行プロセス全体で 1 度だけ作成され、終了まで保持される。 |
+| **`db_session`, `test_client`** | **テスト関数（function）と同じ** | デフォルト（`scope="function"`）。テスト関数ごとに生成され、終了時に破棄。 |
+
+---
+
+### (2) テーブル作成（DDL）とデータ注入（DML）のライフサイクル
+
+- **テーブル作成（DDL）は `session` スコープで 1 回だけ行う**
+  - `CREATE TABLE` や `DROP TABLE` などの DDL 操作は非常に処理コストが重い。
+  - テスト関数ごとにテーブルを作り直すと、テスト件数が増えた際に実行時間が激増する。テーブル構造（スキーマ）は全テスト共通であるため、pytest 起動時に 1 度だけ作れば十分。
+- **データ注入（DML）は `function` スコープで行う**
+  - 各テスト関数が必要とするテストデータを投入し、テスト終了時にロールバックや初期化を行うことで、テスト同士のデータの干渉（テスト順序による依存）を防ぐ。
+
+---
+
+### (3) Fixture のスコープと `autouse=True` の仕組み
+
+#### スコープの種類
+`@pytest.fixture(scope="...")` で指定できる寿命（短い順）：
+1. `function`（デフォルト）: テスト関数ごと
+2. `class`: テストクラスごと
+3. `module`: テストファイル（`.py`）ごと
+4. `package`: パッケージ（サブディレクトリ）ごと
+5. `session`: pytest 実行全体で 1 度のみ
+
+#### 通常の fixture は「レイジー（遅延実行）」
+`scope="session"` であっても、通常の fixture は**テスト関数や他の fixture から引数として要求された瞬間に初めて実行される**。誰からも要求されなければ一度も実行されない。
+
+#### `autouse=True` とは
+テスト関数の引数に明示的に書かなくても、**そのスコープに入った瞬間に pytest が自動的に 1 回実行してくれる設定**。
+テーブルの作成・破棄のように、「テスト関数側でそのオブジェクトを受け取る必要はないが、テストの前提条件として確実に実行しておきたい処理」に利用する。
+
+#### 依存関係の連鎖解決
+```python
+@pytest.fixture(scope="session")
+def engine() -> Generator[Engine]:
+    ...
+
+@pytest.fixture(scope="session", autouse=True)
+def setup_test_db(engine: Engine) -> Generator[None]:
+    Base.metadata.create_all(bind=engine)
+    yield
+    Base.metadata.drop_all(bind=engine)
+```
+1. pytest 開始時、`autouse=True` なのでまず `setup_test_db` が自動起動しようとする。
+2. `setup_test_db` が引数として `engine` を要求しているため、レイジーだった `engine` が連鎖して呼び出される。
+3. `engine` を使ってテーブルが作成され、テストが始まる。
+4. 全テスト終了後、`setup_test_db` の `yield` 以降（`drop_all`）→ `engine` の `yield` 以降（`dispose`）の順でクリーンアップされる。
+
+---
+
+### (4) `engine` / `SessionLocal` を fixture 化する理由と GC の関係
+
+#### 「単発の pytest 実行なら、終了時に OS や GC が解放してくれるのでは？」という疑問
+**結論として、その通り。** ターミナルから単発で `pytest` コマンドを実行して終わるだけなら、プロセス終了に伴い OS がネットワークソケットを閉じ、メモリも回収されるため、グローバル変数に置いても実害はない。
+
+#### それでも fixture 化（`_engine.dispose()`）が推奨される 3 つの理由
+1. **プロセスが死なない常駐ツールへの対応**
+   - IDE のテストランナーや `pytest-watch` など、ファイル変更を検知してプロセスを常駐させたままテストを再実行する環境では、GC に任せていると DB コネクションが解放されずに残り続ける。
+2. **DB サーバー側の Graceful Close**
+   - プロセス終了による強制切断（TCP RST 等）を避け、明示的に接続終了を通知することで、DB サーバー側にゾンビ接続（アイドル状態の接続）が残るのを防ぐ。
+3. **【最大の理由】テスト収集（import）時の副作用防止（遅延初期化）**
+   - モジュール直下に `engine = create_engine(...)` と書くと、`pytest --collect-only`（テスト一覧表示）や型チェック等の静的解析でファイルを `import` しただけでも DB 接続の処理が走ってしまう。
+   - fixture に包むことで、「実際にテストを実行する瞬間」まで処理を遅延させることができる。
+
+#### `SessionLocal` は明示的に破棄しなくてよいのか？
+- **破棄不要（GC 任せで完全に安全）。**
+- `engine` は「DB との実際の接続（コネクションプール）」を保持しているため `dispose()` が存在する。
+- 一方、`SessionLocal = sessionmaker(bind=engine)` は単なる **「Session を生成するための設定テンプレート（ファクトリ）」** にすぎず、通信やソケット接続などの外部リソースを保持していないため、閉じるべきリソースが存在しない。
+- 実際に通信を行う個別の `Session`（`SessionLocal()` で生成したもの）のみ、テスト終了時に `session.close()` すれば十分。
+
+---
+
+### (5) `try ... finally` は必要か？例外発生時の挙動
+
+```python
+# A: try...finally を使う書き方
+@pytest.fixture()
+def db_session() -> Generator[Session]:
+    session = SessionLocal()
+    try:
+        yield session
+    finally:
+        session.close()
+
+# B: try...finally を省略した書き方
+@pytest.fixture()
+def db_session() -> Generator[Session]:
+    session = SessionLocal()
+    yield session
+    session.close()
+```
+
+#### 「テスト中に AssertionError ではなく ValueError などの予期せぬ例外が発生した場合、B だと close() が実行されないのでは？」という疑問
+**結論: B の書き方でも、どんな例外（`ValueError`, `KeyError`, `AssertionError` 等）が発生しても `close()` は 100% 確実に実行される。**
+
+#### なぜ例外が発生しても `close()` が実行されるのか（pytest の内部動作）
+1. pytest は fixture の `yield` までを実行して値を取り出す（`session = next(gen)`）。
+2. テスト関数を実行するが、**pytest のテストランナー本体がテスト関数を `try...except` で保護して実行**している。
+   - ここでテスト内で `ValueError` が発生しても、**pytest がそれをキャッチ**してテスト結果を「FAILED」として記録する。
+3. テストの合否に関わらず、pytest は fixture ジェネレータを再開する（`next(gen)` を呼ぶ）。
+4. ジェネレータは `yield` の次の行から処理を再開するため、**`finally` がなくても `session.close()` が必ず実行される**。
+
+> **注記**: FastAPI の `deps.py`（Dependency）ではリクエスト処理のパイプライン仕様上 `try...finally` が必須だが、pytest の fixture はランナーが保証してくれるため省略可能。習慣として `finally` を残しても害はない。
+
+---
+
+### (6) Fixture 連携時の注意点（落とし穴）
+
+#### `SessionLocal` を fixture 化した際の引数漏れ
+`SessionLocal` を fixture として定義した場合、後続の `db_session` では必ず**引数として `SessionLocal` を受け取る**必要がある。
+
+```python
+# ✕ 誤り: 引数に SessionLocal がない
+@pytest.fixture()
+def db_session() -> Generator[Session]:
+    session = SessionLocal()  # fixture 関数オブジェクトそのものを引数なしで呼ぼうとして TypeError
+    yield session
+    session.close()
+
+# ◯ 正しい: 引数で fixture の生成物を受け取る
+@pytest.fixture()
+def db_session(SessionLocal: sessionmaker[Session]) -> Generator[Session]:
+    session = SessionLocal()
+    yield session
+    session.close()
+```
+引数を忘れると、Python はモジュールスコープの fixture 関数 `SessionLocal(engine)` 自体を直接呼び出そうとし、`TypeError: SessionLocal() missing 1 required positional argument: 'engine'` が発生する。
+
+---
+
+### (7) 改訂版: 洗練された `conftest.py`
+
+上記の設計原則を反映した構成：
+
+```python
+from collections.abc import Generator
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import Engine, create_engine
+from sqlalchemy.orm import Session, sessionmaker
+
+from app.core.config import get_settings
+from app.deps import get_db_session
+from app.main import app
+from app.models import Base
+
+
+# ==============================================================================
+# セッションスコープ（pytest 起動中に 1 回だけ実行・共有）
+# ==============================================================================
+
+
+@pytest.fixture(scope="session")
+def engine() -> Generator[Engine]:
+    """テスト用 DB エンジンを作成し、全テスト終了後にコネクションプールを破棄する。"""
+    _engine = create_engine(url=get_settings().test_database_uri)
+    yield _engine
+    _engine.dispose()
+
+
+@pytest.fixture(scope="session")
+def SessionLocal(engine: Engine) -> sessionmaker[Session]:
+    """テスト用 DB エンジンにバインドされた Session ファクトリを生成する。"""
+    return sessionmaker(autoflush=False, bind=engine)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def setup_test_db(engine: Engine) -> Generator[None]:
+    """全テストの開始前に全テーブルを作成し、全テスト終了後に全テーブルを削除する。"""
+    Base.metadata.create_all(bind=engine)
+    yield
+    Base.metadata.drop_all(bind=engine)
+
+
+# ==============================================================================
+# 関数スコープ（テスト関数ごとに毎回新しく生成・破棄）
+# ==============================================================================
+
+
+@pytest.fixture()
+def db_session(SessionLocal: sessionmaker[Session]) -> Generator[Session]:
+    """テスト関数ごとに独立した DB セッションを提供する。"""
+    session = SessionLocal()
+    yield session
+    session.close()
+
+
+@pytest.fixture()
+def test_client(db_session: Session) -> Generator[TestClient]:
+    """FastAPI の get_db_session をテスト用セッションに差し替えたクライアントを提供する。"""
+    app.dependency_overrides[get_db_session] = lambda: db_session
+    yield TestClient(app)
+    app.dependency_overrides.clear()
+```
