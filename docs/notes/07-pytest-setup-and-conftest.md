@@ -255,18 +255,42 @@ PostgreSQL 公式イメージの「`/docker-entrypoint-initdb.d/` 配下のス�
 4. `package`: パッケージ（サブディレクトリ）ごと
 5. `session`: pytest 実行全体で 1 度のみ
 
-#### 通常の fixture は「レイジー（遅延実行）」
-`scope="session"` であっても、通常の fixture は**テスト関数や他の fixture から引数として要求された瞬間に初めて実行される**。誰からも要求されなければ一度も実行されない。
+#### 通常の fixture は「レイジー（遅延評価）」
+`scope="session"` であっても、通常（`autouse=False`）の fixture は**オンデマンド（遅延評価）**で動作する。
+
+- **① `yield` の前（または `return`）: セットアップのタイミング**
+  - テストセッション開始時にすぐ実行されるわけではない。
+  - **「その fixture（またはそれに依存する fixture）を要求する最初のテストが実行される直前」** に初めて呼び出され、`yield` または `return` される。
+  - セッションスコープなので、2つ目以降のテストでは再実行されず、初回の結果（戻り値・インスタンス）が全テスト終了まで使い回される（キャッシュ）。
+- **② `yield` の後: ティアダウン（クリーンアップ）のタイミング**
+  - **「全テストがすべて終了した直後（セッション終了時）」** に `yield` の後ろが1回だけ実行される。
+- **※ テストのどれもこの fixture を使わない場合**
+  - **結論：一切実行（`yield` / `return`）されない。**
+  - テスト関数の引数に指定されておらず、他の呼び出される fixture からも参照されていない場合、pytest はその存在を無視するため、テストセッションを開始しても `yield` されることはない。
 
 #### `autouse=True` とは
-テスト関数の引数に明示的に書かなくても、**そのスコープに入った瞬間に pytest が自動的に 1 回実行してくれる設定**。
-テーブルの作成・破棄のように、「テスト関数側でそのオブジェクトを受け取る必要はないが、テストの前提条件として確実に実行しておきたい処理」に利用する。
+**「テスト関数の引数に明示的に書かなくても、自動的（Auto-use）に適用・実行される」** 設定。
 
-#### 依存関係の連鎖解決
+通常、fixture を使いたいテストは関数の引数に fixture 名を書く必要がある：
+```python
+def test_user(engine):  # 引数で指定して初めて engine が動く
+    ...
+```
+
+しかし、`autouse=True` を付けると、テスト側が引数に書かなくても自動的にそのスコープのライフサイクルに合わせて実行される。
+- `scope="session", autouse=True` の場合：
+  - **セッション開始時（最初のテストの前）**：どのテストも fixture を要求していなくても、**無条件で自動実行**され、`yield` まで進む。
+  - **全テスト終了後**：自動で `yield` の後ろ（クリーンアップ）が実行される。
+
+テーブルの作成・破棄のように、「テスト関数側でそのオブジェクトを受け取る必要はないが、テストの前提条件として確実に実行しておきたい処理」に最適。
+
+#### 依存関係の連鎖解決（実例）
 ```python
 @pytest.fixture(scope="session")
 def engine() -> Generator[Engine]:
-    ...
+    _engine = create_engine(url=get_settings().test_database_uri)
+    yield _engine
+    _engine.dispose()
 
 @pytest.fixture(scope="session", autouse=True)
 def setup_test_db(engine: Engine) -> Generator[None]:
@@ -274,10 +298,19 @@ def setup_test_db(engine: Engine) -> Generator[None]:
     yield
     Base.metadata.drop_all(bind=engine)
 ```
-1. pytest 開始時、`autouse=True` なのでまず `setup_test_db` が自動起動しようとする。
-2. `setup_test_db` が引数として `engine` を要求しているため、レイジーだった `engine` が連鎖して呼び出される。
-3. `engine` を使ってテーブルが作成され、テストが始まる。
-4. 全テスト終了後、`setup_test_db` の `yield` 以降（`drop_all`）→ `engine` の `yield` 以降（`dispose`）の順でクリーンアップされる。
+1. `setup_test_db` に `autouse=True` が付いているため、テスト側が何も要求していなくても、**セッション開始時に自動起動**する。
+2. `setup_test_db` が引数として `engine` を要求しているため、通常はレイジー（遅延評価）である `engine` が**連鎖してセッション開始時に呼び出される**（`engine` 自体には `autouse=True` を付けなくても連動して動く）。
+3. `engine` の `create_engine` → `setup_test_db` の `Base.metadata.create_all` でテーブルが作成され、テストが始まる。
+4. 全テスト終了後、逆順でクリーンアップされる：
+   - `setup_test_db` の `yield` 以降（`Base.metadata.drop_all`）
+   - `engine` の `yield` 以降（`_engine.dispose()`）
+
+#### 挙動のまとめ
+
+| 設定 | テストで誰も使わない場合 | 実行されるタイミング（yield前） | 終了処理のタイミング（yield後） |
+| :--- | :--- | :--- | :--- |
+| `scope="session"`<br>(`autouse=False`) | **実行されない** | **それを必要とする最初のテストの直前** | 全テスト終了後（セッション終了時） |
+| `scope="session"`<br>`autouse=True` | **必ず実行される** | **最初のテストが始まる前（セッション開始時）** | 全テスト終了後（セッション終了時） |
 
 ---
 
