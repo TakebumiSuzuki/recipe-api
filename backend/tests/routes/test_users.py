@@ -14,9 +14,14 @@ def test_get_users(db_session: Session, test_client: TestClient):
     db_session.commit()
     response = test_client.get("/api/v1/users")
     assert response.status_code == 200
-    assert len(response.json()) == 2
-    assert response.json()[0]["name"] == "user1"
-    assert response.json()[1]["name"] == "user2"
+    data = response.json()
+    assert len(data) == 2
+    assert data[0]["name"] == "user1"
+    assert data[1]["name"] == "user2"
+
+
+def test_get_users_empty():
+    pass
 
 
 def test_get_user_by_id(db_session: Session, test_client: TestClient):
@@ -37,3 +42,9 @@ def test_get_user_by_id(db_session: Session, test_client: TestClient):
 def test_get_user_by_id_not_found(test_client: TestClient):
     response = test_client.get("/api/v1/users/99999")
     assert response.status_code == 404
+    data = response.json()
+    assert data["error"]["code"] == "USER_NOT_FOUND"
+
+
+def test_get_user_by_id_invalid_id():
+    pass

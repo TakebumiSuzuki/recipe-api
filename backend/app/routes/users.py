@@ -1,11 +1,12 @@
 from collections.abc import Sequence
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Path, status
+from fastapi import APIRouter, Depends, Path
 from sqlalchemy.orm import Session
 
 from app.crud import user as crud_user
 from app.deps import get_db_session
+from app.exceptions import UserNotFound
 from app.models import User
 from app.schemas.user import UserPublic
 
@@ -27,8 +28,5 @@ def get_user_by_id(
 ) -> User:
     result = crud_user.get_user_by_id(db_session=db_session, user_id=user_id)
     if result is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"User with id {user_id} not found",
-        )
+        raise UserNotFound(user_id=user_id)
     return result
