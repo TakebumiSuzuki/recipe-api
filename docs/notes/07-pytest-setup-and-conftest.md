@@ -129,7 +129,9 @@ app.dependency_overrides[get_db_session] = lambda: db_session
 
 ---
 
-## 4. 完成した `conftest.py`
+## 4. 初期作成時の素朴な `conftest.py`（改善前）
+
+> **※注意**: この時点の実装は `SessionLocal()` で開いて単に `close()` しているだけのため、テスト中に `commit()` されたデータが DB に残り、テスト間のデータ分離ができません。この課題と解決策（トランザクション・SAVEPOINT対応）は **「6. pytest Fixture のライフサイクルと設計の深掘り」** で後述します。
 
 ```python
 from collections.abc import Generator
@@ -235,13 +237,19 @@ PostgreSQL 公式イメージの「`/docker-entrypoint-initdb.d/` 配下のス�
 
 ---
 
-### (2) テーブル作成（DDL）とデータ注入（DML）のライフサイクル
+### (2) テーブル作成（DDL）とデータ（DML）のライフサイクル
 
 - **テーブル作成（DDL）は `session` スコープで 1 回だけ行う**
   - `CREATE TABLE` や `DROP TABLE` などの DDL 操作は非常に処理コストが重い。
   - テスト関数ごとにテーブルを作り直すと、テスト件数が増えた際に実行時間が激増する。テーブル構造（スキーマ）は全テスト共通であるため、pytest 起動時に 1 度だけ作れば十分。
-- **データ注入（DML）は `function` スコープで行う**
-  - 各テスト関数が必要とするテストデータを投入し、テスト終了時にロールバックや初期化を行うことで、テスト同士のデータの干渉（テスト順序による依存）を防ぐ。
+- **テストデータ（DML）は `function` スコープで毎回完全に消去・リセットする**
+  - **なぜ関数ごとに消す必要があるのか？**
+    - テスト対象のエンドポイントやテストコード内で `commit()` を呼ぶと、データがDBに書き込まれる。
+    - もし前のテストのデータがDBに残ったままだと、次のテストで「全件取得したら2件のはずが、前のテストのデータも混ざって4件になって落ちる」「一意制約（ユニーク制約）違反で落ちる」といった、**テストの実行順序に依存する不安定なバグ（Flaky Test）** が発生する。
+    - したがって、各テスト関数は常に**「白紙のテーブル状態」**から開始されなければならない。
+  - **どうやって消すのか？（DELETE ではなくトランザクションロールバック）**
+    - テストごとに全テーブルに対して `DELETE` や `TRUNCATE` を流すのは遅く、外部キー制約の削除順序や AUTO_INCREMENT のリセット管理も煩雑になる。
+    - そのため、**外側でトランザクションを開いておき、テスト終了時に一発で `rollback()` して無かったことにする**のが最速かつ安全なアプローチとなる。
 
 ---
 
@@ -370,33 +378,76 @@ def db_session() -> Generator[Session]:
 
 ---
 
-### (6) Fixture 連携時の注意点（落とし穴）
+### (6) `sessionmaker` と `Session()` 直接インスタンス化の違い
 
-#### `SessionLocal` を fixture 化した際の引数漏れ
-`SessionLocal` を fixture として定義した場合、後続の `db_session` では必ず**引数として `SessionLocal` を受け取る**必要がある。
+#### なぜ本番アプリでは `sessionmaker` を使うのか？
+- 技術的には、本番でも毎回 `Session(bind=engine, autoflush=False)` と直接書くことは可能。
+- `sessionmaker` を使う理由は **「設定の共通化（DRY原則）」**。
+- `SessionLocal = sessionmaker(bind=engine, autoflush=False)` と定義しておけば、エンドポイントやバッチ処理などアプリの至る所で同じ引数を何度も書かずに、`SessionLocal()` と呼ぶだけで統一された設定の Session を量産できる「工場」として機能する。
 
-```python
-# ✕ 誤り: 引数に SessionLocal がない
-@pytest.fixture()
-def db_session() -> Generator[Session]:
-    session = SessionLocal()  # fixture 関数オブジェクトそのものを引数なしで呼ぼうとして TypeError
-    yield session
-    session.close()
-
-# ◯ 正しい: 引数で fixture の生成物を受け取る
-@pytest.fixture()
-def db_session(SessionLocal: sessionmaker[Session]) -> Generator[Session]:
-    session = SessionLocal()
-    yield session
-    session.close()
-```
-引数を忘れると、Python はモジュールスコープの fixture 関数 `SessionLocal(engine)` 自体を直接呼び出そうとし、`TypeError: SessionLocal() missing 1 required positional argument: 'engine'` が発生する。
+#### なぜテストでは `Session()` を直接インスタンス化するのか？
+- テストでも `engine` そのものは共通のテスト用 DB エンジンを使う。
+- しかし、テスト用の Session には **「このテスト関数1回限りの特注設定」** を施す必要がある：
+  1. あらかじめ開いておいた特定の DB 接続（`connection`）に直接バインドする。
+  2. アプリのコミットをセーブポイントにすり替える `join_transaction_mode="create_savepoint"` を有効にする。
+- このような「1回限りの特注セッション」を手動で組み立てるため、量産工場（`sessionmaker`）を通さず、職人が `Session(bind=connection, ...)` と直接インスタンス化する。
 
 ---
 
-### (7) 改訂版: 洗練された `conftest.py`
+### (7) テスト実行時の一連の流れ（何が起こっているかの時系列）
 
-上記の設計原則を反映した構成：
+fixture のセットアップからエンドポイント実行、そして fixture のクリーンアップに至る一連の流れで、Python と DB の間で何が起きているかを時系列で整理する。
+
+```text
+[テスト開始前]
+fixture: db_session (setup)
+  ├── connection = engine.connect()
+  ├── transaction = connection.begin()     ──> DB: BEGIN; (本物の親トランザクション)
+  └── session = Session(...)               ──> (メモリ上のみ、DB通信なし)
+       │
+[テスト実行中]
+テスト関数 / FastAPI エンドポイント
+  ├── db.execute(...) / db.add(...)        ──> DB: SAVEPOINT sa_savepoint_1;
+  │                                        ──> DB: INSERT INTO ...;
+  └── db.commit()                          ──> DB: RELEASE SAVEPOINT sa_savepoint_1;
+       │                                       (※本物の COMMIT は送らない！親 BEGIN は継続)
+       │
+[テスト終了後]
+fixture: db_session (teardown)
+  ├── session.close()                      ──> (Session のメモリキャッシュ解放)
+  ├── transaction.rollback()               ──> DB: ROLLBACK; (大元ごと一撃で全消滅！)
+  └── connection.close()                   ──> (DB接続をプールに返却)
+```
+
+#### ① テスト開始前（fixture: db_session の前半）
+1. `connection = engine.connect()`: コネクションプールから DB 接続を 1 本確保。
+2. `transaction = connection.begin()`: DB に対して **`BEGIN;`** を発行。ここで「外側の本物のトランザクション」が 1 つだけ開く。
+3. `session = Session(bind=connection, join_transaction_mode="create_savepoint")`:
+   - 特注の Session を生成。この時点ではメモリ上のオブジェクト生成のみで、**DB との通信は一切発生しない**。
+4. `yield session`: テスト関数およびエンドポイントへセッションを引き渡す。
+
+#### ② テスト実行中（エンドポイント内の処理）
+SQL の仕様には「トランザクションの入れ子（BEGIN の中に BEGIN）」は存在しないため、DB 上は親トランザクション（BEGIN）が開いたまま処理が進む。
+1. **エンドポイントで最初の DB 操作（`execute` や `add`）が走った瞬間**:
+   - セーブポイントモードにより、DB に **`SAVEPOINT sa_savepoint_1;`**（しおり）が打たれ、その後に `INSERT` 等のクエリが実行される。
+2. **エンドポイントで `db.commit()` が呼ばれた瞬間**:
+   - SQLAlchemy が本物の `COMMIT` を横取りし、DB には **`RELEASE SAVEPOINT sa_savepoint_1;`**（しおりの解放・確定）のみを送る。
+   - **本物の `COMMIT` は絶対に送られないため、外側の親トランザクションは開いたまま**。しかし、アプリ側には「コミットが正常終了した」ように見せかける（論理コミット）。
+
+#### ③ テスト終了後（fixture: db_session の後半）
+1. `session.close()`:
+   - Session のメモリを解放（Identity Map やキャッシュの破棄）。
+2. `transaction.rollback()`:
+   - DB に対して **`ROLLBACK;`** を発行。
+   - ①で開いた親トランザクションごと巻き戻されるため、**②でエンドポイントがコミットした気になっていたデータも含め、テスト内の全変更が一瞬で跡形もなく消滅し、白紙に戻る**。
+3. `connection.close()`:
+   - DB 接続を切断し、コネクションプールに返却。
+
+---
+
+### (8) 最終版: トランザクションロールバック対応の `conftest.py`
+
+上記の設計原則（セッションスコープのテーブル作成 ＋ 関数スコープのセーブポイント・ロールバック）を反映した完成形：
 
 ```python
 from collections.abc import Generator
@@ -422,7 +473,7 @@ def engine() -> Generator[Engine]:
     """テスト用 DB エンジンを作成し、全テスト終了後にコネクションプールを破棄する。"""
     _engine = create_engine(url=get_settings().test_database_uri)
     yield _engine
-    _engine.dispose()
+    _engine.dispose()  # 全テスト終了時に接続プールを破棄
 
 
 @pytest.fixture(scope="session")
@@ -440,22 +491,35 @@ def setup_test_db(engine: Engine) -> Generator[None]:
 
 
 # ==============================================================================
-# 関数スコープ（テスト関数ごとに毎回新しく生成・破棄）
+# 関数スコープ（テスト関数ごとに毎回新しく生成・ロールバック破棄）
 # ==============================================================================
 
 
 @pytest.fixture()
-def db_session(SessionLocal: sessionmaker[Session]) -> Generator[Session]:
-    """テスト関数ごとに独立した DB セッションを提供する。"""
-    session = SessionLocal()
+def db_session(engine: Engine) -> Generator[Session]:
+    """テスト関数ごとに独立したトランザクションと SAVEPOINT を提供し、終了時に全ロールバックする。"""
+    connection = engine.connect()
+    transaction = connection.begin()
+
+    # 特注の Session を直接インスタンス化（SAVEPOINT モード）
+    session = Session(
+        bind=connection,
+        join_transaction_mode="create_savepoint",
+    )
+
     yield session
+
     session.close()
+    transaction.rollback()  # テスト中の全変更（commit を含む）を完全に巻き戻す
+    connection.close()
 
 
 @pytest.fixture()
 def test_client(db_session: Session) -> Generator[TestClient]:
     """FastAPI の get_db_session をテスト用セッションに差し替えたクライアントを提供する。"""
+    # dependency_overrides の実体は Python辞書（型は dict[Callable, Callable]）
     app.dependency_overrides[get_db_session] = lambda: db_session
-    yield TestClient(app)
+    test_client = TestClient(app)
+    yield test_client
     app.dependency_overrides.clear()
 ```
