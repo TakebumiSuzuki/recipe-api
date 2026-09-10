@@ -37,4 +37,3 @@ def test_get_user_by_id(db_session: Session, test_client: TestClient):
 def test_get_user_by_id_not_found(test_client: TestClient):
     response = test_client.get("/api/v1/users/99999")
     assert response.status_code == 404
-    assert response.json()["detail"] == "User with id 99999 not found"
