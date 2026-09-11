@@ -7,7 +7,7 @@ from app.models import User
 
 
 def get_users(db_session: Session) -> Sequence[User]:
-    stmt = select(User).order_by(User.id)
+    stmt = select(User).order_by(User.id.desc())
     result = db_session.execute(stmt).scalars().all()
     return result
 

@@ -20,6 +20,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base
 
 if TYPE_CHECKING:
+    from app.models.step import Step
     from app.models.user import User
 
 
@@ -69,6 +70,7 @@ class Recipe(Base):
     )
 
     user: Mapped["User | None"] = relationship(back_populates="recipes")
+    steps: Mapped[list["Step"]] = relationship(back_populates="recipe")
 
     __table_args__ = (
         UniqueConstraint("user_id", "title"),

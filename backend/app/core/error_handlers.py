@@ -78,7 +78,7 @@ def register_error_handlers(app: FastAPI) -> None:
             status_code=422,
             content={
                 "error": {
-                    "code": "validation_error",
+                    "code": "VALIDATION_ERROR",
                     "message": "入力内容を確認してください",
                     # loc の先頭は "body" / "query" などの出所なので落とし、残りをつないで項目名にする
                     # または、出どころも入れるように、"details": exc.errors() のように書くのもOK
