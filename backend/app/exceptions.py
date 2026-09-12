@@ -39,3 +39,12 @@ class UserNotFound(APIException):
             code="USER_NOT_FOUND",
             detail=f"User id:{user_id} not found.",
         )
+
+
+class UserAlreadyExists(APIException):
+    def __init__(self, email: str):
+        super().__init__(
+            status_code=409,
+            code="USER_ALREADY_EXISTS",
+            detail=f"User email:{email} exists.",
+        )

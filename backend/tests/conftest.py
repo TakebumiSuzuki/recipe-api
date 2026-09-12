@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.core.config import get_settings
 from app.deps import get_db_session
 from app.main import app
-from app.models import Base
+from app.models import Base, User
 
 
 @pytest.fixture(scope="session")
@@ -61,3 +61,11 @@ def test_client(db_session: Session) -> Generator[TestClient]:
     test_client = TestClient(app)
     yield test_client
     app.dependency_overrides.clear()
+
+
+@pytest.fixture()
+def test_user(db_session: Session) -> User:
+    user = User(name="Tom", email="tom@gmail.com", bio="Here is Test bio.")
+    db_session.add(user)
+    db_session.commit()
+    return user

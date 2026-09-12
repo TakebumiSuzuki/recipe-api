@@ -69,8 +69,14 @@ class Recipe(Base):
         onupdate=func.now(),
     )
 
-    user: Mapped["User | None"] = relationship(back_populates="recipes")
-    steps: Mapped[list["Step"]] = relationship(back_populates="recipe")
+    user: Mapped["User | None"] = relationship(
+        back_populates="recipes",
+    )
+    steps: Mapped[list["Step"]] = relationship(
+        back_populates="recipe",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
 
     __table_args__ = (
         UniqueConstraint("user_id", "title"),
