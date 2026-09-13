@@ -62,7 +62,7 @@ def register_error_handlers(app: FastAPI) -> None:
             status_code=exc.status_code,
             content={
                 "error": {
-                    "code": getattr(exc, "code", "http_error"),
+                    "code": getattr(exc, "code", "HTTP_ERROR"),
                     "message": exc.detail,
                     "details": getattr(exc, "details", {}),
                 }
@@ -76,12 +76,18 @@ def register_error_handlers(app: FastAPI) -> None:
     ):
         return JSONResponse(
             status_code=422,
+            # exc.errors() について:
+            # 1. 戻り値: 各エラー情報を持つ「辞書のリスト（list[dict]）」。各 dict に "loc", "msg", "type" などが含まれる。
+            # 2. FastAPI の独自ラップ: Pydantic のエラーに HTTP の出所（"body", "query" 等）を付加して再ラップしたもの。
+            # 3. 属性直接ではなくメソッドになっている理由:
+            #    - 本家 Pydantic の呼び出し方（.errors()）と形を合わせているため。
+            #      （本家 Pydantic では引数でカスタマイズできるが、FastAPI 側ではカスタマイズできず、内部の _errors を返す仕様で固定）
             content={
                 "error": {
                     "code": "VALIDATION_ERROR",
-                    "message": "入力内容を確認してください",
+                    "message": "Please check your input.",
                     # loc の先頭は "body" / "query" などの出所なので落とし、残りをつないで項目名にする
-                    # または、出どころも入れるように、"details": exc.errors() のように書くのもOK
+                    # もし、"details": exc.errors() のようにシンプルに書くと、フロント側のパースの手間が増える
                     "details": {
                         ".".join(str(part) for part in error["loc"][1:]): error["msg"]
                         for error in exc.errors()
@@ -106,8 +112,8 @@ def register_error_handlers(app: FastAPI) -> None:
                 status_code=500,
                 content={
                     "error": {
-                        "code": "internal_error",
-                        "message": "サーバー側で問題が発生しました",
+                        "code": "INTERNAL_ERROR",
+                        "message": "An internal server error occurred.",
                         "details": {},
                     }
                 },
@@ -137,8 +143,8 @@ def register_error_handlers(app: FastAPI) -> None:
             status_code=500,
             content={
                 "error": {
-                    "code": "internal_error",
-                    "message": "サーバー側で問題が発生しました",
+                    "code": "INTERNAL_ERROR",
+                    "message": "An internal server error occurred.",
                     "details": {},
                 }
             },

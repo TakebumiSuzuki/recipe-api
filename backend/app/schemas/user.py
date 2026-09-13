@@ -3,6 +3,13 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 
+class UserSummary(BaseModel):
+    id: int
+    name: str = Field(min_length=2, max_length=50)
+    email: EmailStr
+    model_config = ConfigDict(from_attributes=True)
+
+
 class UserPublic(BaseModel):
     id: int
     name: str = Field(min_length=2, max_length=50)

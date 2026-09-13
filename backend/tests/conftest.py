@@ -3,7 +3,7 @@ from collections.abc import Generator
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import Engine, create_engine
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.deps import get_db_session
@@ -18,11 +18,6 @@ def engine() -> Generator[Engine]:
     _engine.dispose()  # 全テスト終了時に接続プールを破棄
 
 
-@pytest.fixture(scope="session")
-def SessionLocal(engine: Engine) -> sessionmaker[Session]:
-    return sessionmaker(autoflush=False, bind=engine)
-
-
 @pytest.fixture(scope="session", autouse=True)
 def setup_test_db(engine: Engine) -> Generator[None]:
     Base.metadata.create_all(bind=engine)
@@ -30,15 +25,10 @@ def setup_test_db(engine: Engine) -> Generator[None]:
     Base.metadata.drop_all(bind=engine)
 
 
-# @pytest.fixture()
-# def db_session(SessionLocal: sessionmaker[Session]) -> Generator[Session]:
-#     db_session = SessionLocal()
-#     yield db_session
-#     db_session.close()
-
-
 @pytest.fixture()
 def db_session(engine: Engine) -> Generator[Session]:
+    # 接続を毎回行うのではなく、プールから空いている接続を1本借りてくる
+    # Base.metadata.create_all(bind=engine) で作られたコネクションを借りるということ。
     connection = engine.connect()
     transaction = connection.begin()
 
@@ -46,11 +36,11 @@ def db_session(engine: Engine) -> Generator[Session]:
         bind=connection,
         join_transaction_mode="create_savepoint",
     )
-
     yield session
 
     session.close()
     transaction.rollback()
+    # プールに接続を返却する
     connection.close()
 
 

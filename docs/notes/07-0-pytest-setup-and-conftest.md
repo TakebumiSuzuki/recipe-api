@@ -23,7 +23,7 @@ backend/
 `pyproject.toml` に設定する `[tool.pytest.ini_options]` の `pythonpath = ["."]` は、pytest がテスト実行時にモジュールを探索するための重要な設定。
 
 #### (1) 基準は「CWD（コマンド実行場所）」ではなく「設定ファイルの場所」
-ここが最も重要な仕様。`pythonpath = ["."]` と指定したときの `"."` は、ターミナルでコマンドを打った場所（CWD）ではなく、**`pyproject.toml` が置かれているディレクトリ（rootdir）** を基準として絶対パスに展開される。
+ここが最も重要な仕様。`pythonpath = ["."]` と指定したときの `"."` は、ターミナルでコマンドを打った場所（CWD）ではなく、この**`pyproject.toml` が置かれているディレクトリ（rootdir）** を基準とする。
 
 そのため、仮にプロジェクトルートなど別の場所から pytest を呼び出したとしても、常に `backend` ディレクトリが基準として解決される。
 
@@ -32,7 +32,8 @@ pytest が起動すると、テストファイルの探索やコード読み込�
 
 ```python
 # pytest 内部の動作イメージ
-resolved_path = (config_dir / ".").resolve()
+resolved_path = (config_dir / ".").resolve()  # "."と指定したため、結果的に変化なし (つまり config_dir のまま)
+
 sys.path.insert(0, str(resolved_path))
 ```
 
@@ -48,36 +49,16 @@ sys.path.insert(0, str(resolved_path))
 
 結論として、オプション引数（`scope` 等）を渡さない場合は **`()` を省略して `@pytest.fixture` と書いてもよしなに動作する**。
 
-#### なぜ両方動くのか（Python デコレータの仕組み）
-Python の一般的なデコレータは、「引数を取るデコレータ（`@deco()`）」と「引数を取らないデコレータ（`@deco`）」で実装の書き方が異なる。
-しかし、pytest の `fixture` 実装は以下のように**第1引数が関数（callable）かどうかを判定するラッパー構造**になっている：
-
-```python
-# pytest 内部のデコレータ判定イメージ
-def fixture(fixture_function=None, *, scope="function", ...):
-    if fixture_function is not None:
-        # @pytest.fixture と書かれた場合：対象の関数が第1引数に直接渡される
-        return create_fixture(fixture_function, scope=scope)
-    
-    # @pytest.fixture(...) と書かれた場合：デコレータ関数を返す
-    def decorator(fn):
-        return create_fixture(fn, scope=scope)
-    return decorator
-```
-
-- 引数を指定しない場合: `@pytest.fixture` でも `@pytest.fixture()` でも同じ結果になる。
-- 引数を指定する場合: `@pytest.fixture(scope="session")` のように括弧が必須。
-
 ---
 
 ## 3. つまづいたこと・誤解していたこと
 
 ### `uv add --dev pytest` と `httpx` の関係
-- `uv add --dev pytest` で開発用依存関係（`[dependency-groups] dev`）に正しく追加される。
+- `uv add --dev pytest` で開発用依存関係（`[dependency-groups] dev`）に追加される。
 - FastAPI のテストで使う `TestClient` は内部で `httpx` を利用するが、**`fastapi[standard]` を導入しているプロジェクトであれば、すでに `httpx` が同梱されている**。そのため別途 `uv add --dev httpx` を叩く必要はない。
 
 ### `uv pytest init` というコマンドは存在しない
-- `alembic init` のような初期化コマンドが `pytest` や `uv` にあるわけではない。
+- `alembic init` のような初期化コマンドが `pytest` にあるわけではない。
 - `tests` ディレクトリの作成や、`pyproject.toml` への `[tool.pytest.ini_options]` の追記は**手動**で行う。
 
 ### `testpaths` は必須ではない
@@ -88,11 +69,6 @@ def fixture(fixture_function=None, *, scope="function", ...):
 - pytest が共通フィクスチャ定義ファイルとして自動認識・自動ロードする特別なファイル名は **`conftest.py`**（`configuration for tests` の略）。
 - このファイルに書かれたフィクスチャは、テストファイル側で明示的に `import` しなくても自動的に利用可能になる。
 
-### `.env` と `config.py` のキー名不一致（URI vs URL）
-- `.env` 側に `TEST_DATABASE_URI` と書き、`config.py` 側に `test_database_url` と書くと、末尾が `URI` と `URL` で異なるため、Pydantic Settings の自動マッピングが効かない。
-- その結果、デフォルト値（空文字列 `""`）が採用され、`create_engine(url="")` で `ArgumentError` となる。
-- 既存の `database_uri` に合わせて **`test_database_uri`** で完全に統一する。
-
 ---
 
 ### `conftest.py` における `app.dependency_overrides` の落とし穴
@@ -100,7 +76,7 @@ def fixture(fixture_function=None, *, scope="function", ...):
 FastAPI の DI（依存性注入）をテスト時に差し替える `app.dependency_overrides` には、初見で踏みやすい罠が複数ある。
 
 #### 1. 辞書構文（丸括弧 `()` ではなく角括弧 `[]`）
-`dependency_overrides` は辞書（dict）オブジェクト。丸括弧をつけて `app.dependency_overrides(...) = ...` と書くと、関数呼び出しの戻り値へ代入しようとしているとみなされ `SyntaxError: cannot assign to function call` となる。
+`dependency_overrides` は辞書（dict）オブジェクト。
 
 #### 2. キーは「依存関数オブジェクトそのもの」
 キーには文字列（`"get_db_session"`）ではなく、**インポートした関数そのもの**を指定する。
@@ -119,66 +95,18 @@ app.dependency_overrides[get_db_session] = db_session
 app.dependency_overrides[get_db_session] = lambda: db_session
 ```
 
-#### 4. 「DB を使わないテストだと lambda がなくても動いてしまう」遅延評価の罠
-「練習用プロジェクトでは `lambda:` なしでも動いた」と感じる場合、そのテストが **DB を使わないエンドポイント（`/` や `/health` 等）を叩いていた可能性が高い**。
-`dependency_overrides` は登録時や `TestClient` 初期化時には検証されず、**実際にその `Depends(get_db_session)` を持つエンドポイントにリクエストが届いた瞬間に初めて評価される**。そのため、DB を使わないテストだけを走らせていると、間違ったオーバーライドを書いていてもテストが PASS してしまい、不具合が見逃される。
-
-#### 5. テスト終了後のクリーンアップ（`.clear()`）
+#### 4. テスト終了後のクリーンアップ（`.clear()`）
 オーバーライドした設定はアプリケーションインスタンス（`app`）のメモリ上に残るため、テスト終了後に元に戻さないと他のテストに影響を及ぼす。
 フィクスチャ内で `try ... finally` やコンテキストマネージャを用いて必ず `app.dependency_overrides.clear()` を呼ぶ。
 
 ---
 
-## 4. 初期作成時の素朴な `conftest.py`（改善前）
-
-> **※注意**: この時点の実装は `SessionLocal()` で開いて単に `close()` しているだけのため、テスト中に `commit()` されたデータが DB に残り、テスト間のデータ分離ができません。この課題と解決策（トランザクション・SAVEPOINT対応）は **「6. pytest Fixture のライフサイクルと設計の深掘り」** で後述します。
-
-```python
-from collections.abc import Generator
-
-import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session, sessionmaker
-
-from app.core.config import get_settings
-from app.deps import get_db_session
-from app.main import app
-
-# Pydantic Settings からテスト用 DB の URI を取得
-engine = create_engine(url=get_settings().test_database_uri)
-SessionLocal = sessionmaker(autoflush=False, bind=engine)
-
-
-@pytest.fixture
-def db_session() -> Generator[Session]:
-    db_session = SessionLocal()
-    try:
-        yield db_session
-    finally:
-        db_session.close()
-
-
-@pytest.fixture
-def test_client(db_session: Session):
-    # アプリ側の get_db_session をテスト用セッションで差し替え
-    app.dependency_overrides[get_db_session] = lambda: db_session
-    test_client = TestClient(app)
-    try:
-        yield test_client
-    finally:
-        # 他のテストに影響を与えないようクリア
-        app.dependency_overrides.clear()
-```
-
----
-
-## 5. テスト用データベース（`test_db`）の作成
+## 4. テスト用データベース（`test_db`）の作成
 
 ### なぜ作成が必要なのか？
-1. **`conftest.py` は DB そのものは作らない**  
+1. **`conftest.py` は DB そのものは作らない**
    `create_engine(url=...)` は既存の DB への接続設定を行っているだけで、PostgreSQL サーバー内にデータベース自体を作成するわけではない。
-2. **Docker Compose の初期化仕様**  
+2. **Docker Compose の初期化仕様**
    PostgreSQL 公式イメージは、初回起動時に環境変数 `POSTGRES_DB` で指定されたデータベース（本環境では `mydb`）を 1 つだけ自動作成する。そのため、`test_db` は自動では作成されず、存在しない状態で接続すると `database "test_db" does not exist` エラーになる。
 
 ---
@@ -190,13 +118,16 @@ def test_client(db_session: Session):
 ```bash
 psql -h db -U myuser -d mydb -c "CREATE DATABASE test_db;"
 ```
+* **オプション解説**:
+  * `-d mydb`: 接続先 DB。PostgreSQL は接続時に既存 DB への接続が 1 つ必須なため、足がかりとして `mydb` にログインしている。
+  * `-c "..."`: 対話モード（プロンプト）に入らず、渡した SQL を非対話（ワンショット）で実行して即終了する。
 * **メリット**: コマンド 1 行ですぐに作れる。
 * **注意点**: ボリューム（`postgres-data`）を破棄・再作成した際は、再度実行が必要。
 
 #### 方法 2: Docker 初回起動時に自動作成（恒久的な仕組み）
 PostgreSQL 公式イメージの「`/docker-entrypoint-initdb.d/` 配下のスクリプトを初回起動時に自動実行する」機能を利用する。
 
-1. **フォルダと SQL ファイルを作成**  
+1. **フォルダと SQL ファイルを作成**
    `.devcontainer/initdb.d/01-create-test-db.sql` を作成：
    ```sql
    CREATE DATABASE test_db;
@@ -211,11 +142,11 @@ PostgreSQL 公式イメージの「`/docker-entrypoint-initdb.d/` 配下のス�
          - postgres-data:/var/lib/postgresql
          - ./initdb.d:/docker-entrypoint-initdb.d:ro
    ```
-   * **相対パス**: `./initdb.d` は `docker-compose.yml` が置かれている場所（`.devcontainer/`）が起点。
+   * **相対パス**: `./initdb.d` は `docker-compose.yml` が置かれている場所（つまり、`.devcontainer/`）が起点。
    * **`.d` の意味**: Linux 慣習の `directory` の略。コンテナ側の公式マウント先（`/docker-entrypoint-initdb.d/`）に合わせて命名。
    * **フォルダマウントの利点**: 単一ファイルではなくフォルダ単位でマウントすることで、今後初期化スクリプトが増えても compose ファイルを弄らずに追加できる。
    * **`01-` の理由**: PostgreSQL はファイルを名前順（アルファベット順）に実行するため、スクリプトが複数になった際の実行順序を保証するお作法。
-3. **既存環境への反映（Docker Desktop の GUI 操作）**  
+3. **既存環境への反映（Docker Desktop の GUI 操作）**
    初期化スクリプトは「ボリュームが空の初回起動時」にしか走らないため、既存環境に反映させる場合は Docker Desktop から安全にリセットする：
    1. Docker Desktop の **Containers** で `db` コンテナのみ削除（ゴミ箱）。
    2. **Volumes** で `...postgres-data` ボリュームのみ削除（※ `claude-state` 等は触らない）。
@@ -223,7 +154,7 @@ PostgreSQL 公式イメージの「`/docker-entrypoint-initdb.d/` 配下のス�
 
 ---
 
-## 6. pytest Fixture のライフサイクルと設計の深掘り
+## 5. pytest Fixture のライフサイクルと設計の深掘り
 
 ### (1) 各コンポーネントのライフサイクルと対応関係
 
@@ -313,13 +244,6 @@ def setup_test_db(engine: Engine) -> Generator[None]:
    - `setup_test_db` の `yield` 以降（`Base.metadata.drop_all`）
    - `engine` の `yield` 以降（`_engine.dispose()`）
 
-#### 挙動のまとめ
-
-| 設定 | テストで誰も使わない場合 | 実行されるタイミング（yield前） | 終了処理のタイミング（yield後） |
-| :--- | :--- | :--- | :--- |
-| `scope="session"`<br>(`autouse=False`) | **実行されない** | **それを必要とする最初のテストの直前** | 全テスト終了後（セッション終了時） |
-| `scope="session"`<br>`autouse=True` | **必ず実行される** | **最初のテストが始まる前（セッション開始時）** | 全テスト終了後（セッション終了時） |
-
 ---
 
 ### (4) `engine` / `SessionLocal` を fixture 化する理由と GC の関係
@@ -381,7 +305,7 @@ def db_session() -> Generator[Session]:
 ### (6) `sessionmaker` と `Session()` 直接インスタンス化の違い
 
 #### なぜ本番アプリでは `sessionmaker` を使うのか？
-- 技術的には、本番でも毎回 `Session(bind=engine, autoflush=False)` と直接書くことは可能。
+- 技術的には、本番でも毎回 `Session(bind=engine, autoflush=False)` と直接クラスからインスタンス化することは可能。
 - `sessionmaker` を使う理由は **「設定の共通化（DRY原則）」**。
 - `SessionLocal = sessionmaker(bind=engine, autoflush=False)` と定義しておけば、エンドポイントやバッチ処理などアプリの至る所で同じ引数を何度も書かずに、`SessionLocal()` と呼ぶだけで統一された設定の Session を量産できる「工場」として機能する。
 
@@ -442,84 +366,3 @@ SQL の仕様には「トランザクションの入れ子（BEGIN の中に BEG
    - ①で開いた親トランザクションごと巻き戻されるため、**②でエンドポイントがコミットした気になっていたデータも含め、テスト内の全変更が一瞬で跡形もなく消滅し、白紙に戻る**。
 3. `connection.close()`:
    - DB 接続を切断し、コネクションプールに返却。
-
----
-
-### (8) 最終版: トランザクションロールバック対応の `conftest.py`
-
-上記の設計原則（セッションスコープのテーブル作成 ＋ 関数スコープのセーブポイント・ロールバック）を反映した完成形：
-
-```python
-from collections.abc import Generator
-
-import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import Engine, create_engine
-from sqlalchemy.orm import Session, sessionmaker
-
-from app.core.config import get_settings
-from app.deps import get_db_session
-from app.main import app
-from app.models import Base
-
-
-# ==============================================================================
-# セッションスコープ（pytest 起動中に 1 回だけ実行・共有）
-# ==============================================================================
-
-
-@pytest.fixture(scope="session")
-def engine() -> Generator[Engine]:
-    """テスト用 DB エンジンを作成し、全テスト終了後にコネクションプールを破棄する。"""
-    _engine = create_engine(url=get_settings().test_database_uri)
-    yield _engine
-    _engine.dispose()  # 全テスト終了時に接続プールを破棄
-
-
-@pytest.fixture(scope="session")
-def SessionLocal(engine: Engine) -> sessionmaker[Session]:
-    """テスト用 DB エンジンにバインドされた Session ファクトリを生成する。"""
-    return sessionmaker(autoflush=False, bind=engine)
-
-
-@pytest.fixture(scope="session", autouse=True)
-def setup_test_db(engine: Engine) -> Generator[None]:
-    """全テストの開始前に全テーブルを作成し、全テスト終了後に全テーブルを削除する。"""
-    Base.metadata.create_all(bind=engine)
-    yield
-    Base.metadata.drop_all(bind=engine)
-
-
-# ==============================================================================
-# 関数スコープ（テスト関数ごとに毎回新しく生成・ロールバック破棄）
-# ==============================================================================
-
-
-@pytest.fixture()
-def db_session(engine: Engine) -> Generator[Session]:
-    """テスト関数ごとに独立したトランザクションと SAVEPOINT を提供し、終了時に全ロールバックする。"""
-    connection = engine.connect()
-    transaction = connection.begin()
-
-    # 特注の Session を直接インスタンス化（SAVEPOINT モード）
-    session = Session(
-        bind=connection,
-        join_transaction_mode="create_savepoint",
-    )
-
-    yield session
-
-    session.close()
-    transaction.rollback()  # テスト中の全変更（commit を含む）を完全に巻き戻す
-    connection.close()
-
-
-@pytest.fixture()
-def test_client(db_session: Session) -> Generator[TestClient]:
-    """FastAPI の get_db_session をテスト用セッションに差し替えたクライアントを提供する。"""
-    # dependency_overrides の実体は Python辞書（型は dict[Callable, Callable]）
-    app.dependency_overrides[get_db_session] = lambda: db_session
-    test_client = TestClient(app)
-    yield test_client
-    app.dependency_overrides.clear()
-```

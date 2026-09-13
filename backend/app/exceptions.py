@@ -21,12 +21,15 @@ class APIException(HTTPException):
 
     def __init__(
         self,
-        status_code: int,
-        code: str,
-        detail: str,
-        details: dict[str, Any] | None = None,
-        headers: dict[str, str] | None = None,
+        status_code: int,  # from HTTPException
+        code: str,  # このアプリの独自属性
+        detail: str,  # from HTTPException
+        details: dict[str, Any] | None = None,  # このアプリの独自属性
+        headers: dict[str, str] | None = None,  # from HTTPException
     ):
+        # Python ではデフォルト引数は関数定義時に1度だけ評価されるため、
+        # 可変オブジェクト（{}）を指定すると全インスタンス間で同一の辞書が共有されてしまう。
+        # その副作用を防ぐため None を初期値とし、関数内で新しい辞書を生成する。
         super().__init__(status_code=status_code, detail=detail, headers=headers)
         self.code = code
         self.details = details or {}
@@ -38,6 +41,8 @@ class UserNotFound(APIException):
             status_code=404,
             code="USER_NOT_FOUND",
             detail=f"User id:{user_id} not found.",
+            details={"user_id": user_id},
+            # headers=None となる
         )
 
 
@@ -47,4 +52,6 @@ class UserAlreadyExists(APIException):
             status_code=409,
             code="USER_ALREADY_EXISTS",
             detail=f"User email:{email} exists.",
+            details={"email": email},
+            # headers=None となる
         )

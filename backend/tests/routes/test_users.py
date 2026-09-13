@@ -164,6 +164,15 @@ def test_update_user_duplicate_email(test_client: TestClient, test_user: User):
     assert data["error"]["code"] == "USER_ALREADY_EXISTS"
 
 
+def test_update_user_same_email(test_client: TestClient, test_user: User):
+    update_data = {"email": test_user.email}
+    response = test_client.patch(f"/api/v1/users/{test_user.id}", json=update_data)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["email"] == test_user.email
+    assert data["id"] == test_user.id
+
+
 def test_update_user_name_only(test_client: TestClient, test_user: User):
     update_data = {"name": "Tom2"}
     response = test_client.patch(f"/api/v1/users/{test_user.id}", json=update_data)
