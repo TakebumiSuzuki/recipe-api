@@ -355,8 +355,8 @@ SQL の仕様には「トランザクションの入れ子（BEGIN の中に BEG
 1. **エンドポイントで最初の DB 操作（`execute` や `add`）が走った瞬間**:
    - セーブポイントモードにより、DB に **`SAVEPOINT sa_savepoint_1;`**（しおり）が打たれ、その後に `INSERT` 等のクエリが実行される。
 2. **エンドポイントで `db.commit()` が呼ばれた瞬間**:
-   - SQLAlchemy が本物の `COMMIT` を横取りし、DB には **`RELEASE SAVEPOINT sa_savepoint_1;`**（しおりの解放・確定）のみを送る。
-   - **本物の `COMMIT` は絶対に送られないため、外側の親トランザクションは開いたまま**。しかし、アプリ側には「コミットが正常終了した」ように見せかける（論理コミット）。
+   - SQLAlchemy が本物の `COMMIT` を横取りし、DB には **`RELEASE SAVEPOINT sa_savepoint_1;`**（しおりの解放・破棄）のみを送る。
+   - **本物の `COMMIT` は絶対に送られないため、外側の親トランザクションは開いたまま**。しかし、アプリ側には「コミットが正常終了した」ように見せかける（擬似的なコミット完了）。
 
 #### ③ テスト終了後（fixture: db_session の後半）
 1. `session.close()`:

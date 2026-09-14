@@ -7,6 +7,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    SmallInteger,
     String,
     Text,
     UniqueConstraint,
@@ -39,8 +40,8 @@ class Recipe(Base):
     )
     title: Mapped[str] = mapped_column(String(100))
     description: Mapped[str | None] = mapped_column(Text())
-    servings: Mapped[int]
-    cook_time_min: Mapped[int]
+    servings: Mapped[int] = mapped_column(SmallInteger())
+    cook_time_min: Mapped[int] = mapped_column(SmallInteger())
     difficulty: Mapped[Difficulty] = mapped_column(
         SAEnum(
             Difficulty,
@@ -76,6 +77,7 @@ class Recipe(Base):
         back_populates="recipe",
         cascade="all, delete-orphan",
         passive_deletes=True,
+        order_by="Step.step_no",
     )
 
     __table_args__ = (
