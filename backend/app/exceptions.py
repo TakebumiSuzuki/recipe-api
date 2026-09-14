@@ -55,3 +55,13 @@ class UserAlreadyExists(APIException):
             details={"email": email},
             # headers=None となる
         )
+
+
+class RecipeAlreadyExists(APIException):
+    def __init__(self, title: str):
+        super().__init__(
+            status_code=409,
+            code="Recipe_ALREADY_EXISTS",
+            detail=f"Recipe title:{title} exists for this user.",
+            details={"title": title},
+        )

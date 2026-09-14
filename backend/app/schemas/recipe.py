@@ -31,6 +31,9 @@ RecipeDesc = Annotated[
 
 
 class RecipeCreate(BaseModel):
+    user_id: int | None = (
+        None  # このアプリではログイン機能がないので明示的に注入する仕様にする
+    )
     title: RecipeTitle
     description: RecipeDesc = None
     servings: PositiveInt
