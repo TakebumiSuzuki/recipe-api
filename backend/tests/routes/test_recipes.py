@@ -1,31 +1,11 @@
+import pytest
 from fastapi.testclient import TestClient
 
-from app.models.recipe import Difficulty
+from app.models import Recipe, User
 
 
-def test_create_recipe_with_steps(test_client: TestClient):
-    post_data = {
-        "title": "Japanese Curry",
-        "description": "A classic homemade Japanese beef curry.",
-        "servings": 4,
-        "cook_time_min": 45,
-        "difficulty": Difficulty.NORMAL.value,
-        "source": {"url": "https://example.com/recipes/curry"},
-        "steps": [
-            {
-                "step_no": 1,
-                "instruction": "Cut vegetables and meat into bite-sized pieces.",
-            },
-            {
-                "step_no": 2,
-                "instruction": "Stir-fry ingredients in a pot until lightly browned.",
-            },
-            {
-                "step_no": 3,
-                "instruction": "Add water, simmer, and dissolve curry roux.",
-            },
-        ],
-    }
+def test_create_recipe_with_steps(test_client: TestClient, recipe_payload_factory):
+    post_data = recipe_payload_factory(num_steps=2)
 
     response = test_client.post("/api/v1/recipes", json=post_data)
     assert response.status_code == 201
@@ -53,26 +33,155 @@ def test_create_recipe_with_steps(test_client: TestClient):
         assert actual_step["instruction"] == expected_step["instruction"]
 
 
-def test_create_recipe_without_steps():
+def test_create_recipe_without_steps(test_client: TestClient, recipe_payload_factory):
+    post_data = recipe_payload_factory(num_steps=0)
+    response = test_client.post("/api/v1/recipes", json=post_data)
+    assert response.status_code == 201
+    data = response.json()
+    assert "id" in data
+    assert len(data["steps"]) == 0
+
+
+def test_create_recipe_omit_step_field(test_client: TestClient, recipe_payload_factory):
+    post_data = recipe_payload_factory(num_steps=2)
+    del post_data["steps"]
+    response = test_client.post("/api/v1/recipes", json=post_data)
+    assert response.status_code == 201
+    data = response.json()
+    assert "id" in data
+
+
+def test_create_recipe_without_source(test_client: TestClient, recipe_payload_factory):
+    post_data = recipe_payload_factory(num_steps=2)
+    del post_data["source"]
+    response = test_client.post("/api/v1/recipes", json=post_data)
+    assert response.status_code == 201
+    data = response.json()
+    assert "id" in data
+    assert data["source"] == None
+
+
+def test_create_recipe_duplicate_title(
+    test_client: TestClient, recipe_payload_factory, test_user: User
+):
+    post_data = recipe_payload_factory(num_steps=2)
+    post_data.update({"user_id": test_user.id})
+    response = test_client.post("/api/v1/recipes", json=post_data)
+    assert response.status_code == 201
+    response2 = test_client.post("/api/v1/recipes", json=post_data)
+    assert response2.status_code == 409
+    assert response2.json()["error"]["code"] == "RECIPE_ALREADY_EXISTS"
+
+
+def test_create_recipe_duplicate_title_without_user_id(
+    test_client: TestClient, recipe_payload_factory
+):
+    post_data = recipe_payload_factory(num_steps=2)
+    response = test_client.post("/api/v1/recipes", json=post_data)
+    assert response.status_code == 201
+    response2 = test_client.post("/api/v1/recipes", json=post_data)
+    assert response2.status_code == 201
+
+
+@pytest.mark.parametrize(
+    ("invalid_data", "expected_field"),
+    [
+        ({"title": "   "}, "title"),
+        ({"title": "a" * 101}, "title"),
+        ({"description": "a" * 5001}, "description"),
+        ({"servings": 0}, "servings"),
+        ({"cook_time_min": 0}, "cook_time_min"),
+        ({"difficulty": "impossible"}, "difficulty"),
+        ({"source": "a"}, "source"),
+        ({"steps": [{"step_no": 0, "instruction": "test"}]}, "steps.0.step_no"),
+        ({"steps": [{"step_no": 1, "instruction": "    "}]}, "steps.0.instruction"),
+    ],
+)
+def test_create_recipe_invalid_fields(
+    test_client: TestClient,
+    recipe_payload_factory,
+    invalid_data,
+    expected_field,
+):
+    post_data = recipe_payload_factory(num_steps=2)
+    post_data.update(invalid_data)
+    response = test_client.post("/api/v1/recipes", json=post_data)
+    assert response.status_code == 422
+    data = response.json()
+    assert data["error"]["code"] == "VALIDATION_ERROR"
+    assert expected_field in data["error"]["details"]
+
+
+def test_get_recipe_by_id(test_client: TestClient, test_recipe: Recipe):
+    response = test_client.get(f"/api/v1/recipes/{test_recipe.id}")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["id"] == test_recipe.id
+    assert data["title"] == test_recipe.title
+    assert len(data["steps"]) == len(test_recipe.steps)
+    assert data["steps"][0]["step_no"] == test_recipe.steps[0].step_no
+    assert data["steps"][0]["instruction"] == test_recipe.steps[0].instruction
+
+
+def test_get_recipe_by_id_not_found(test_client: TestClient):
+    response = test_client.get("/api/v1/recipes/9999")
+    assert response.status_code == 404
+    data = response.json()
+    assert data["error"]["code"] == "RECIPE_NOT_FOUND"
+
+
+def test_update_recipe(
+    test_client: TestClient,
+    test_recipe: Recipe,
+    recipe_payload_factory,
+):
+    patch_data = recipe_payload_factory(num_steps=2)
+
+    patch_data["steps"][0]["id"] = test_recipe.steps[0].id
+    patch_data["steps"][1]["id"] = test_recipe.steps[1].id
+
+    response = test_client.patch(f"/api/v1/recipes/{test_recipe.id}", json=patch_data)
+    assert response.status_code == 200
+    data = response.json()
+    # 1. レシピ本体が更新されていること
+    assert data["title"] == patch_data["title"]
+    assert data["description"] == patch_data["description"]
+
+    # 2. ステップが 2 つとも正しく更新されていること
+    assert len(data["steps"]) == 2
+    assert data["steps"][0]["id"] == test_recipe.steps[0].id
+    assert data["steps"][0]["instruction"] == patch_data["steps"][0]["instruction"]
+
+    assert data["steps"][1]["id"] == test_recipe.steps[1].id
+    assert data["steps"][1]["instruction"] == patch_data["steps"][1]["instruction"]
+
+
+def test_update_recipe_step_delete(
+    test_client: TestClient,
+    test_recipe: Recipe,
+    recipe_payload_factory,
+):
+    step_ids = [step.id for step in test_recipe.steps]
+    patch_data = recipe_payload_factory(num_steps=1)
+    patch_data["steps"][0]["id"] = step_ids[1]
+
+    response = test_client.patch(f"/api/v1/recipes/{test_recipe.id}", json=patch_data)
+    assert response.status_code == 200
+    data = response.json()
+
+    assert data["id"] == test_recipe.id
+    assert len(data["steps"]) == 1
+    # 1番目のステップを削除し、2番目のステップ（step_ids[1]）を先頭（step_no=1）に繰り上げる
+    assert data["steps"][0]["id"] == step_ids[1]
+    assert data["steps"][0]["step_no"] == 1
+    assert data["steps"][0]["instruction"] == patch_data["steps"][0]["instruction"]
+
+
+def test_update_recipe_step_add():
     pass
 
 
-def test_get_recipe_by_id():
-    # /api/v1/recipes/{recipe_id}
-    pass
-
-
-# def test_get_recipes(test_client: TestClient):
-#     response = test_client.get("/api/v1/recipes")
-#     assert response.status_code == 200
-
-
-# def test_get_recipes_filter_by_user_id(test_client: TestClient, user: User):
-#     response = test_client.get(f"/api/v1/recipes/{user.id}")
-#     assert response.status_code == 200
-
-
-def test_update_recipe_by_id():
+def test_update_recipe_step_descrepancy():
     pass
 
 

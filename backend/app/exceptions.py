@@ -61,7 +61,17 @@ class RecipeAlreadyExists(APIException):
     def __init__(self, title: str):
         super().__init__(
             status_code=409,
-            code="Recipe_ALREADY_EXISTS",
+            code="RECIPE_ALREADY_EXISTS",
             detail=f"Recipe title:{title} exists for this user.",
             details={"title": title},
+        )
+
+
+class RecipeNotFound(APIException):
+    def __init__(self, recipe_id: int):
+        super().__init__(
+            status_code=404,
+            code="RECIPE_NOT_FOUND",
+            detail=f"Recipe id:{recipe_id} not found.",
+            details={"recipe_id": recipe_id},
         )
