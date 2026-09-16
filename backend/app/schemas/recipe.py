@@ -1,7 +1,15 @@
 from datetime import datetime
 from typing import Annotated, Any
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, PositiveInt
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    PositiveInt,
+    ValidationInfo,
+    field_validator,
+)
 
 from app.models.recipe import Difficulty
 from app.schemas.step import StepCreate, StepPublic, StepUpdate
@@ -51,6 +59,13 @@ class RecipeUpdate(BaseModel):
     difficulty: Difficulty | None = None
     source: dict[str, Any] | None = None
     steps: list[StepUpdate] | None = None
+
+    @field_validator("title", "servings", "cook_time_min", "difficulty")
+    @classmethod
+    def prevent_none_for_required_fields(cls, v: Any, info: ValidationInfo):
+        if v is None:
+            raise ValueError(f"{info.field_name} cannot be null")
+        return v
 
 
 class RecipeSummary(BaseModel):

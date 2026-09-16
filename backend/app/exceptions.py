@@ -75,3 +75,13 @@ class RecipeNotFound(APIException):
             detail=f"Recipe id:{recipe_id} not found.",
             details={"recipe_id": recipe_id},
         )
+
+
+class StepNotFound(APIException):
+    def __init__(self, step_ids: list[int]):
+        super().__init__(
+            status_code=404,
+            code="STEP_NOT_FOUND",
+            detail=f"Step ids:{step_ids} not found.",
+            details={"step_ids": step_ids},
+        )

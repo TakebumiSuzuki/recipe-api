@@ -1,7 +1,7 @@
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from app.exceptions import RecipeAlreadyExists, RecipeNotFound
+from app.exceptions import RecipeAlreadyExists, RecipeNotFound, StepNotFound
 from app.models import Recipe, Step
 from app.schemas.recipe import RecipeCreate, RecipeUpdate
 
@@ -56,6 +56,9 @@ def update_recipe(
         incoming_step_map = {
             step.id: step for step in recipe_in.steps if step.id is not None
         }
+        invalid_step_ids = incoming_step_map.keys() - current_step_map.keys()
+        if invalid_step_ids:
+            raise StepNotFound(step_ids=list(invalid_step_ids))
 
         step_ids_to_update = current_step_map.keys() & incoming_step_map.keys()
         step_ids_to_delete = current_step_map.keys() - incoming_step_map.keys()
