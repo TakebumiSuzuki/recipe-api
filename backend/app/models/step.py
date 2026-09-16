@@ -19,7 +19,7 @@ class Step(Base):
     recipe: Mapped["Recipe"] = relationship(back_populates="steps")
 
     __table_args__ = (
-        UniqueConstraint("recipe_id", "step_no"),
+        UniqueConstraint("recipe_id", "step_no", deferrable=True, initially="DEFERRED"),
         CheckConstraint("step_no >= 1", name="step_no_gte"),
         CheckConstraint("length(instruction) <= 1000", name="instruction_length_lte"),
         CheckConstraint("length(trim(instruction)) >= 1", name="instruction_not_blank"),

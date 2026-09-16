@@ -1,7 +1,9 @@
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
-from app.models import Recipe, User
+from app.models import Recipe, Step, User
 
 
 def test_create_recipe_with_steps(test_client: TestClient, recipe_payload_factory):
@@ -287,17 +289,95 @@ def test_update_recipe_invalid_fields(
     assert expected_field in data["error"]["details"]
 
 
-def test_update_recipe_not_found():
-    pass
+def test_update_recipe_not_found(
+    test_client: TestClient,
+    recipe_payload_factory,
+):
+    response = test_client.patch("/api/v1/recipes/9999", json=recipe_payload_factory(1))
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "RECIPE_NOT_FOUND"
 
 
-def test_update_recipe_empty_body(test_client: TestClient, test_recipe: Recipe):
-    # 「stepsキーを送らなかった場合、既存のステップが誤って削除されず、そのまま維持されること」 を保証するガードレール
-    pass
+# 「stepsキーを送らなかった場合、既存のステップが誤って削除されず、そのまま維持されること」 を保証するガードレール
+def test_update_recipe_empty_body(
+    test_client: TestClient,
+    test_recipe: Recipe,
+    recipe_payload_factory,
+):
+    patch_data = recipe_payload_factory(1)
+    del patch_data["steps"]
+    response = test_client.patch(f"/api/v1/recipes/{test_recipe.id}", json=patch_data)
+    assert response.status_code == 200
+    data = response.json()
+    assert "steps" in data
+    assert data["steps"][0]["id"] == test_recipe.steps[0].id
+    assert data["steps"][0]["step_no"] == test_recipe.steps[0].step_no
+    assert data["steps"][0]["instruction"] == test_recipe.steps[0].instruction
+    assert data["steps"][1]["id"] == test_recipe.steps[1].id
+    assert data["steps"][1]["step_no"] == test_recipe.steps[1].step_no
+    assert data["steps"][1]["instruction"] == test_recipe.steps[1].instruction
 
 
 # タイトル重複による更新（UniqueConstraint 違反）
+def test_update_break_title_unique_constraint(
+    test_client: TestClient, recipe_payload_factory, test_user: User
+):
+    post_data_1 = recipe_payload_factory(1)
+    post_data_1.update({"user_id": test_user.id})
+    response_1 = test_client.post("/api/v1/recipes", json=post_data_1)
+    assert response_1.status_code == 201
+    assert response_1.json()["user_id"] == test_user.id
+
+    post_data_2 = recipe_payload_factory(1)
+    post_data_2.update({"user_id": test_user.id})
+    post_data_2["title"] = "post_data_2_title"
+    response_2 = test_client.post("/api/v1/recipes", json=post_data_2)
+    assert response_2.status_code == 201
+    assert response_2.json()["user_id"] == test_user.id
+
+    patch_data = {"title": response_1.json()["title"]}
+    response_3 = test_client.patch(
+        f"/api/v1/recipes/{response_2.json()['id']}", json=patch_data
+    )
+    assert response_3.status_code == 409
+    assert response_3.json()["error"]["code"] == "RECIPE_ALREADY_EXISTS"
 
 
-def test_delete_recipe_by_id():
-    pass
+def test_update_recipe_same_title_with_user_id(
+    test_client: TestClient,
+    recipe_payload_factory,
+    test_user: User,
+):
+    post_data = recipe_payload_factory(1)
+    post_data["user_id"] = test_user.id
+    response = test_client.post("/api/v1/recipes", json=post_data)
+    assert response.status_code == 201
+    patch_data = {"title": post_data["title"]}
+    response_2 = test_client.patch(
+        f"/api/v1/recipes/{response.json()['id']}", json=patch_data
+    )
+    assert response_2.status_code == 200
+    assert response_2.json()["title"] == patch_data["title"]
+
+
+def test_delete_recipe(
+    test_client: TestClient, test_recipe: Recipe, db_session: Session
+):
+    steps_to_delete = [step.id for step in test_recipe.steps]
+    assert len(steps_to_delete) > 0
+
+    response = test_client.delete(f"/api/v1/recipes/{test_recipe.id}")
+    assert response.status_code == 204
+    response_2 = test_client.get(f"/api/v1/recipes/{test_recipe.id}")
+    assert response_2.status_code == 404
+    data = response_2.json()
+    assert data["error"]["code"] == "RECIPE_NOT_FOUND"
+
+    for step_id in steps_to_delete:
+        assert db_session.get(Step, step_id) is None
+
+
+def test_delete_recipe_not_found(test_client: TestClient):
+    response = test_client.delete("/api/v1/recipes/9999")
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "RECIPE_NOT_FOUND"

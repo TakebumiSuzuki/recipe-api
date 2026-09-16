@@ -42,3 +42,11 @@ def update_recipe(
         db_session=db_session, recipe_id=recipe_id, recipe_in=recipe_in
     )
     return result
+
+
+@router.delete("/{recipe_id}", status_code=204)
+def delete_recipe(
+    db_session: Annotated[Session, Depends(get_db_session)],
+    recipe_id: Annotated[int, Path()],
+):
+    crud_recipe.delete_recipe(db_session=db_session, recipe_id=recipe_id)

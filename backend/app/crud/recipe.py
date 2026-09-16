@@ -7,7 +7,6 @@ from app.schemas.recipe import RecipeCreate, RecipeUpdate
 
 
 def create_recipe(db_session: Session, recipe_in: RecipeCreate):
-
     user_id = recipe_in.user_id
     title = recipe_in.title
     if user_id is not None:
@@ -46,6 +45,19 @@ def update_recipe(
     if current_recipe is None:
         raise RecipeNotFound(recipe_id)
 
+    # user_id が None の場合には　user_id と title の組み合わせのユニーク制約は適用されない。
+    if current_recipe.user_id is not None:
+        # Recipe.id != current_recipe.id は、元々のタイトルと全く同じタイトルを patch データーに
+        # 入れてしまった場合、元々のレコードに対して重複だ、と判断してしまうのを防ぐため。
+        stmt = select(Recipe).where(
+            Recipe.user_id == current_recipe.user_id,
+            Recipe.title == recipe_in.title,
+            Recipe.id != current_recipe.id,
+        )
+        duplicated_recipe = db_session.execute(stmt).scalar_one_or_none()
+        if duplicated_recipe:
+            raise RecipeAlreadyExists(title=duplicated_recipe.title)
+
     recipe_update_data = recipe_in.model_dump(exclude={"steps"}, exclude_unset=True)
     for k, v in recipe_update_data.items():
         setattr(current_recipe, k, v)
@@ -83,3 +95,12 @@ def update_recipe(
     db_session.commit()
     db_session.refresh(current_recipe)
     return current_recipe
+
+
+def delete_recipe(db_session: Session, recipe_id: int):
+    stmt = select(Recipe).where(Recipe.id == recipe_id)
+    recipe_to_delete = db_session.execute(stmt).scalar_one_or_none()
+    if recipe_to_delete is None:
+        raise RecipeNotFound(recipe_id=recipe_id)
+    db_session.delete(recipe_to_delete)
+    db_session.commit()
