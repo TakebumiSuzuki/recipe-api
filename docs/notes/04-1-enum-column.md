@@ -102,9 +102,9 @@ CONSTRAINT ck_recipes_difficulty CHECK (difficulty IN ('easy','normal','hard'))
 | 取り出した型 | `str`（素の文字列。`Difficulty` に戻らない） |
 | 不正値を保存 | `IntegrityError`（DBのCHECKが弾く） |
 
-**なぜ値が保存されるのか**：`Difficulty.EASY` は `StrEnum` なので、それ自体が文字列 `"easy"` である。
-`String` カラムは渡されたものをそのまま文字列としてドライバに渡すだけで、変換は一切しない。
-だから `easy` がそのまま入る。
+**なぜ値が保存されるのか**：
+`Difficulty.EASY` は `StrEnum` なので、それ自体が Python の文字列 `"easy"` です。
+SQLAlchemy の `String` カラムには型変換処理（バインドプロセッサー）が存在せず、値をそのまま素通りさせてドライバ（psycopg）へ渡します。受け取ったドライバ側で「Python の `str`」として認識され、UTF-8 バイト列（`b'easy'`）に変換されて DB に送信されるため、`"easy"` がそのまま格納されます。
 
 つまり案Aが成立する条件は「**メンバーが `str` であること**」。
 `StrEnum` でも `str` をミックスインした `class Difficulty(str, Enum)` でも同じように動く。
@@ -164,14 +164,16 @@ difficulty: Mapped[Difficulty] = mapped_column(
 `SAEnum` は `sqlalchemy.Enum` そのもの（`SAEnum is sqlalchemy.Enum` → `True`）。
 `SA` は SQLAlchemy の略で、慣習的な別名。決まった正解の名前はない。
 
-### 既定値を4つ打ち消している
+### デフォルト値から上書きしている4つの引数
 
-| 引数 | 初期値 | 指定後 |
-|---|---|---|
-| `values_callable` | 名前 `EASY` を保存 | 値 `easy` を保存 |
-| `native_enum` | `True`（PostgreSQL に `CREATE TYPE` が走る） | `False`（VARCHAR になる） |
-| `create_constraint` | `False` | `True`（CHECK を自動で付ける） |
-| `length` | 最長メンバー長（=6） | 10 |
+`SAEnum(...)` を初期設定のまま使うと意図しない挙動（DB 独自の ENUM 型が作られたり、Enum の値ではなく名前 `'EASY'` が保存されたりする）になるため、**4つの引数でデフォルト値を上書き（変更）** しています。
+
+| 引数 | デフォルト値（指定しない場合） | 上書き後の指定（今回の設定） | 上書きした目的・理由 |
+|---|---|---|---|
+| `values_callable` | Enum の名前（`'EASY'`）を保存 | Enum の値（`'easy'`）を保存 | DB に小文字の値（value）で格納するため |
+| `native_enum` | `True`（PostgreSQL 独自の ENUM 型を作成） | `False`（`VARCHAR` にする） | 選択肢の追加やマイグレーションを容易にするため |
+| `create_constraint` | `False`（制約なし） | `True`（`CHECK` 制約を自動付与） | DB 側でも不正な文字列の混入を防ぐため |
+| `length` | 最長メンバーの文字数（`=6`） | `10` | 将来的に少し長い選択肢が増えても対応できるよう余裕を持たせるため |
 
 `values_callable` は**保存のたびに走る関数ではない**。型を初期化するとき（アプリ起動時にモデルが読み込まれたとき）に**1回だけ呼ばれ**、以下の3つを準備する：
 
@@ -193,11 +195,15 @@ CONSTRAINT ck_recipes_difficulty CHECK (difficulty IN ('easy', 'normal', 'hard')
 
 ### 挙動（実測）
 
-| | 結果 |
-|---|---|
-| DBに入る値 | `easy` |
-| 取り出した型 | `Difficulty`（`StrEnum` なので `str` でもある） |
-| 不正値を保存 | `IntegrityError` |
+| | 結果 | 備考 |
+|---|---|---|
+| DBに入る値 | `easy` | 値（value）が入る |
+| 取り出した型 | `Difficulty` | `StrEnum` なので `str` の性質も併せ持つ |
+| **不正なオブジェクトを保存**<br>（例: 未知の Enum や数値） | **`LookupError`**<br>（`StatementError`） | **Python 側で即座に弾く**<br>（バインドプロセッサーが検知して DB 到達前に停止） |
+| **不正な文字列を保存**<br>（例: `"invalid"`） | **`IntegrityError`** | **DB 側で弾く**<br>（デフォルトでは文字列は素通りするため、DB の CHECK 制約が検知） |
+
+> **※ なぜ不正な「文字列」だけ DB まで素通りするのか？**
+> SQLAlchemy の `Enum` は、`LIKE` 検索（`difficulty.like("ea%")`）など文字列としての操作を阻害しないよう、デフォルトで文字列の検証を行わない仕様（`validate_strings=False`）になっています。不正な文字列も Python 側で事前に弾きたい場合は、`SAEnum(..., validate_strings=True)` を指定します。
 
 ### 内部のデータフロー（bind / result processor と辞書引き）
 
@@ -213,7 +219,7 @@ Python がモデルファイルを読み込んだ瞬間に `values_callable` が
 2. SQLAlchemy の `SAEnum` 型の **bind processor が動く**。
    事前準備された `_valid_lookup` を引き、Enum オブジェクトから値の文字列を取り出す。
    `_valid_lookup[Difficulty.EASY]` → `'easy'`
-   *(※もし未定義の不正なオブジェクトが渡されていたら、ここで `LookupError` を出してDB到達前に弾く)*
+   *(※未定義の Enum や数値を渡した場合は、ここで `LookupError` を出して DB 到達前に弾く。ただし素の文字列 `"invalid"` はデフォルトで素通りし、DB の CHECK 制約で `IntegrityError` になる)*
 3. 変換された素の文字列 `'easy'` が psycopg に渡される。
 4. psycopg は「Pythonの `str` が来た」と判断し、UTF-8 のバイナリ列に変換して PostgreSQL に送信。
 5. PostgreSQL の `VARCHAR(10)` に無事 `"easy"` が格納される。
@@ -246,6 +252,17 @@ PostgreSQL に**ネイティブ ENUM 型**が作られる（`CREATE TYPE difficu
 - 利点：DB自身が値を保証する。
 - 欠点：値の**追加は簡単だが、削除・改名が面倒**（型を作り直す手間がかかることがある）。
   将来増減する想定なら VARCHAR + CHECK のほうが身軽。
+
+### 選択肢変更時のマイグレーションと Alembic の注意点
+
+Enum の選択肢を増減させた場合、以下の運用上の注意点があります。
+
+- **Enum を変更したらマイグレーションは必須**
+  Python 側で Enum の定義を変更しても、DB 側の CHECK 制約は自動的には書き換わりません。マイグレーションを行わずに新しい選択肢の値を保存しようとすると、DB の既存 CHECK 制約に弾かれて `IntegrityError` になります。
+- **Alembic の `autogenerate` は CHECK 制約をスルーする**
+  Alembic の自動差分検知は、仕様上 CHECK 制約の変更・追加・削除を検知しません（型自体も `VARCHAR` のままで変わらないため、差分なしと判定されます）。「自動生成コマンドを実行すれば勝手に検知してくれる」と油断していると見落としの原因になります。
+- **手動での制約貼り替えが標準的なアプローチ**
+  実務では、`--autogenerate` を使わずに空のリビジョンファイルを作成し、古い CHECK 制約の削除（`drop_constraint`）と新しい選択肢を含めた制約の再作成（`create_check_constraint`）を手書きで記述して適用します。
 
 ---
 
@@ -322,9 +339,4 @@ CHECK制約も残しておけば、アプリを経由しない直接のINSERTへ
 ただし、案Bの引数4つで済む話をクラス1つ書いて再実装することになるので、
 案Bを使わない特別な理由がなければ出番は少ない。
 
----
 
-## 間違えやすい点
-
-- **名前が保存されるのは `sqlalchemy.Enum` を素で使ったときだけ。**
-  `String(10)` では値（`easy`）が保存される。両者は別の話なので混ぜない。

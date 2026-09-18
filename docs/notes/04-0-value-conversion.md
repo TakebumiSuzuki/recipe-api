@@ -24,7 +24,7 @@
      ・列の型（mapped_column の右辺）を知っている層
   ────── DBAPI 境界 (PEP 249) ──────
   ② psycopg (DBAPI ドライバ)
-     ・値の Python 型（または DB から渡された型情報）だけを見る層
+     ・値の Python 型（または読み出しの場合には DB から渡された値の型情報）だけを見る層
   ────── ネットワーク ──────
   ③ PostgreSQL (データベース)
      ・テーブル定義とデータ本体を持つ層
@@ -35,11 +35,13 @@
 
 SQLAlchemy がドライバ（psycopg）にクエリを渡すとき、渡しているのは **「SQL 文字列」と「パラメータの値(Pythonの型のオブジェクト)」だけ** です。
 
+psycopg の役割は、第一引数（SQL 文字列）と第二引数（パラメータの値）を受け取り、PostgreSQL が実行できる通信データ（プロトコル電文）に変換・送信することです。現在の標準である psycopg 3 では、1本の SQL に文字列として値を合体させるのではなく、第一引数の「SQL テンプレート」と第二引数から変換した「値のデータ（バイト列）」を別々にサーバーへ送信し、DB 側で安全に当てはめて実行する仕組みをとっています。
+
 ```python
 # 渡される実態のイメージ
 cursor.execute(
-    "UPDATE recipes SET servings = %(servings)s WHERE id = %(id)s",
-    {"servings": 4, "id": 1}
+    "UPDATE recipes SET servings = %(servings)s WHERE id = %(id)s",  # 第一引数: SQL 文字列
+    {"servings": 4, "id": 1},  # 第二引数: パラメータ辞書
 )
 ```
 

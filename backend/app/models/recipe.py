@@ -21,6 +21,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base
 
 if TYPE_CHECKING:
+    from app.models.ingredients import RecipeIngredient
     from app.models.step import Step
     from app.models.user import User
 
@@ -78,6 +79,10 @@ class Recipe(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
         order_by="Step.step_no",
+    )
+
+    recipe_ingredients: Mapped[list["RecipeIngredient"]] = relationship(
+        back_populates="recipe", passive_deletes=True, cascade="all, delete-orphan"
     )
 
     __table_args__ = (

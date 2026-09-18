@@ -142,7 +142,7 @@ RUN curl -fsSL https://antigravity.google/cli/install.sh | bash
 # デーモンが常駐してブラウザを開いたまま保持し、snapshot で画面状態を見ながら click/fill 等を
 # 継続できる（単発 CLI と違い 1 コマンドごとに閉じない）。スナップショットをディスクに保存する
 # ため MCP 版よりトークン効率が良い。
-RUN npm install -g @anthropic-ai/claude-code docx pptxgenjs @anthropic-ai/sandbox-runtime @playwright/cli@latest
+RUN npm install -g @anthropic-ai/claude-code docx pptxgenjs @anthropic-ai/sandbox-runtime @playwright/cli@latest  @openai/codex
 
 # @playwright/cli が要求する「正確なリビジョン」の Chromium 本体を、CLI 純正コマンドで取得する。
 # ここを npx playwright install で代用すると最新版が入る一方、@playwright/cli が内包する
