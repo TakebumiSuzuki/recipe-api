@@ -10,7 +10,7 @@ from app.exceptions import UserNotFound
 from app.models import User
 from app.schemas.user import UserCreate, UserPublic, UserUpdate
 
-router = APIRouter(prefix="/api/v1/users")
+router = APIRouter(prefix="/api/v1/users", tags=["users"])
 
 
 @router.get("", response_model=list[UserPublic])

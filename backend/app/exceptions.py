@@ -85,3 +85,23 @@ class StepNotFound(APIException):
             detail=f"Step ids:{step_ids} not found.",
             details={"step_ids": step_ids},
         )
+
+
+class IngredientAlreadyExists(APIException):
+    def __init__(self, name: str):
+        super().__init__(
+            status_code=409,
+            code="INGREDIENT_ALREADY_EXISTS",
+            detail=f"Ingredient name:{name} already exists",
+            details={"name": name},
+        )
+
+
+class IngredientNotFound(APIException):
+    def __init__(self, ingredient_id: int):
+        super().__init__(
+            status_code=404,
+            code="INGREDIENT_NOT_FOUND",
+            detail=f"Ingredient id:{ingredient_id} not found",
+            details={"ingredient_id": ingredient_id},
+        )
