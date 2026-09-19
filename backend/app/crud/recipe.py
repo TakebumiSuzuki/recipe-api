@@ -2,22 +2,71 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.exceptions import RecipeAlreadyExists, RecipeNotFound, StepNotFound
-from app.models import Recipe, Step
+from app.models import Recipe, RecipeIngredient, Step
+from app.models.ingredients import Ingredient
 from app.schemas.recipe import RecipeCreate, RecipeUpdate
 
 
 def create_recipe(db_session: Session, recipe_in: RecipeCreate):
     user_id = recipe_in.user_id
     title = recipe_in.title
+    # このアプリでは、user_id の情報なしで送ると、schemaが Noneに設定するようにしてある
     if user_id is not None:
         stmt = select(Recipe).where(Recipe.user_id == user_id, Recipe.title == title)
         existing_recipe = db_session.execute(stmt).scalar_one_or_none()
         if existing_recipe:
             raise RecipeAlreadyExists(title)
 
-    steps = [Step(**step.model_dump()) for step in recipe_in.steps]
+    # ここで、steps 項目については Stepモデルのリストが完成
+    steps = [Step(**step_in.model_dump()) for step_in in recipe_in.steps]
 
-    new_recipe = Recipe(**(recipe_in.model_dump() | {"steps": steps}))
+    # 以下で、ingredients項目の Ingredientモデルのリストを作る
+    recipe_ingredients = []
+    for ri_in in recipe_in.recipe_ingredients:
+        if ri_in.ingredient_name:
+            ing_name = ri_in.ingredient_name
+            stmt = select(Ingredient).where(Ingredient.name == ing_name)
+            existing_ingredient = db_session.execute(stmt).scalar_one_or_none()
+            # ingredient_name を送ってきたにもかかわらず、すでに存在していた場合
+            if existing_ingredient:
+                ri_in.ingredient_id = existing_ingredient.id
+                new_ri = RecipeIngredient(
+                    **ri_in.model_dump(exclude={"ingredient_name"})
+                )
+                recipe_ingredients.append(new_ri)
+
+            # 送られてきた ingredient_name を使って新しく Ingredient を作り登録
+            else:
+                new_ing = Ingredient(name=ing_name)
+                new_ri = RecipeIngredient(
+                    **(
+                        ri_in.model_dump(exclude={"ingredient_name"})
+                        | {"ingredient": new_ing}
+                    )
+                )
+
+                recipe_ingredients.append(new_ri)
+
+        # ingredientの id を送ってきた場合
+        elif ri_in.ingredient_id:
+            new_ri = RecipeIngredient(**ri_in.model_dump(exclude={"ingredient_name"}))
+            recipe_ingredients.append(new_ri)
+
+        else:
+            raise RuntimeError(
+                "RecipeIngredient must have either ingredient_id or ingredient_name. "
+                "This should have been caught by schema validation."
+            )
+
+    new_recipe = Recipe(
+        **(
+            recipe_in.model_dump()
+            | {
+                "steps": steps,
+                "recipe_ingredients": recipe_ingredients,
+            }
+        )
+    )
     db_session.add(new_recipe)
     db_session.commit()
     db_session.refresh(new_recipe)
@@ -26,7 +75,14 @@ def create_recipe(db_session: Session, recipe_in: RecipeCreate):
 
 def get_recipe_by_id(db_session: Session, recipe_id: int) -> Recipe | None:
     stmt = (
-        select(Recipe).where(Recipe.id == recipe_id).options(selectinload(Recipe.steps))
+        select(Recipe)
+        .where(Recipe.id == recipe_id)
+        .options(
+            selectinload(Recipe.steps),
+            selectinload(Recipe.recipe_ingredients).selectinload(
+                RecipeIngredient.ingredient
+            ),
+        )
     )
     recipe = db_session.execute(stmt).scalar_one_or_none()
     return recipe

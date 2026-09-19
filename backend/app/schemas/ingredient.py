@@ -8,7 +8,7 @@ class IngredientCreate(BaseModel):
 
     @field_validator("name", mode="before")
     @classmethod
-    def strip_name(cls, v: Any):
+    def _strip(cls, v: Any):
         if isinstance(v, str):
             return v.strip()
         return v

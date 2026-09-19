@@ -56,8 +56,6 @@ class Recipe(Base):
     source: Mapped[dict[str, Any] | None] = mapped_column(
         MutableDict.as_mutable(JSONB())
     )
-
-    # is_published: Mapped[bool] = mapped_column(server_default=text("false"))
     published_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
     )
@@ -82,10 +80,13 @@ class Recipe(Base):
     )
 
     recipe_ingredients: Mapped[list["RecipeIngredient"]] = relationship(
-        back_populates="recipe", passive_deletes=True, cascade="all, delete-orphan"
+        back_populates="recipe",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
     )
 
     __table_args__ = (
+        # user_id が None の場合には、この制約は無効となる
         UniqueConstraint("user_id", "title"),
         CheckConstraint("length(trim(title)) >= 1", name="title_gte"),
         CheckConstraint("servings >= 1", name="servings_gte"),

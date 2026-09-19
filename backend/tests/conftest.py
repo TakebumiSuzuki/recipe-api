@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.deps import get_db_session
 from app.main import app
-from app.models import Base, Ingredient, Recipe, Step, User
+from app.models import Base, Ingredient, Recipe, RecipeIngredient, Step, User
 
 
 @pytest.fixture(scope="session")
@@ -63,7 +63,7 @@ def test_user(db_session: Session) -> User:
 
 @pytest.fixture()
 def recipe_payload_factory():
-    def _factory(num_steps: int, **kwargs):
+    def _factory(num_steps: int = 2, num_ingredients: int = 2, **kwargs):
         payload = {
             "title": "Incoming title",
             "description": "Incoming description.",
@@ -77,6 +77,14 @@ def recipe_payload_factory():
                     "instruction": f"Incoming instruction: {step}",
                 }
                 for step in range(1, num_steps + 1)
+            ],
+            "recipe_ingredients": [
+                {
+                    "ingredient_name": f"Incoming name: {ingredient}",
+                    "quantity": 3,
+                    "unit": "g",
+                }
+                for ingredient in range(1, num_ingredients + 1)
             ],
         }
         payload.update(kwargs)
@@ -95,7 +103,11 @@ def test_recipe(db_session: Session) -> Recipe:
     )
     recipe.steps.append(Step(step_no=1, instruction="Test Step 1"))
     recipe.steps.append(Step(step_no=2, instruction="Test Step 2"))
-
+    recipe.recipe_ingredients.append(
+        RecipeIngredient(
+            quantity=2, unit="個", ingredient=Ingredient(name="Test ingredient")
+        )
+    )
     db_session.add(recipe)
     db_session.commit()
     return recipe

@@ -1,13 +1,15 @@
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Recipe, Step, User
+from app.models import Recipe, Step, User, Ingredient
 
 
-def test_create_recipe_with_steps(test_client: TestClient, recipe_payload_factory):
-    post_data = recipe_payload_factory(num_steps=2)
+def test_create_recipe_with_steps_and_ingredients(
+    test_client: TestClient,
+    recipe_payload_factory,
+):
+    post_data = recipe_payload_factory(num_steps=2, num_ingredients=2)
 
     response = test_client.post("/api/v1/recipes", json=post_data)
     assert response.status_code == 201
@@ -34,19 +36,61 @@ def test_create_recipe_with_steps(test_client: TestClient, recipe_payload_factor
         assert actual_step["step_no"] == expected_step["step_no"]
         assert actual_step["instruction"] == expected_step["instruction"]
 
+    assert len(data["recipe_ingredients"]) == len(post_data["recipe_ingredients"])
+    for i, expected_ingredient in enumerate(post_data["recipe_ingredients"]):
+        actual_ingredient = data["recipe_ingredients"][i]
+        assert "ingredient_id" in actual_ingredient
+        assert "recipe_id" in actual_ingredient
+        assert actual_ingredient["recipe_id"] == data["id"]
+        assert float(actual_ingredient["quantity"]) == expected_ingredient["quantity"]
+        assert actual_ingredient["unit"] == expected_ingredient["unit"]
+        assert (
+            actual_ingredient["ingredient"]["name"]
+            == expected_ingredient["ingredient_name"]
+        )
 
-def test_create_recipe_without_steps(test_client: TestClient, recipe_payload_factory):
-    post_data = recipe_payload_factory(num_steps=0)
+
+def test_create_recipe_with_ingredient_ids(
+    db_session: Session,
+    test_client: TestClient,
+    recipe_payload_factory,
+):
+    ingredient = Ingredient(name="test")
+    db_session.add(ingredient)
+    db_session.commit()
+    db_session.refresh(ingredient)
+
+    post_data = recipe_payload_factory(num_steps=0, num_ingredients=2)
+    del post_data["recipe_ingredients"][0]["ingredient_name"]
+    post_data["recipe_ingredients"][0]["ingredient_id"] = ingredient.id
+
+    response = test_client.post("/api/v1/recipes", json=post_data)
+    assert response.status_code == 201
+
+    data = response.json()
+    assert len(data["recipe_ingredients"]) == 2
+    assert data["recipe_ingredients"][0]["ingredient_id"] == ingredient.id
+    assert data["recipe_ingredients"][0]["ingredient"]["name"] == ingredient.name
+
+
+def test_create_recipe_without_steps_and_ingredients(
+    test_client: TestClient, recipe_payload_factory
+):
+    post_data = recipe_payload_factory(num_steps=0, num_ingredients=0)
     response = test_client.post("/api/v1/recipes", json=post_data)
     assert response.status_code == 201
     data = response.json()
     assert "id" in data
     assert len(data["steps"]) == 0
+    assert len(data["recipe_ingredients"]) == 0
 
 
-def test_create_recipe_omit_step_field(test_client: TestClient, recipe_payload_factory):
-    post_data = recipe_payload_factory(num_steps=2)
+def test_create_recipe_omit_step_and_ingredient_fields(
+    test_client: TestClient, recipe_payload_factory
+):
+    post_data = recipe_payload_factory(num_steps=2, num_ingredients=2)
     del post_data["steps"]
+    del post_data["recipe_ingredients"]
     response = test_client.post("/api/v1/recipes", json=post_data)
     assert response.status_code == 201
     data = response.json()
@@ -54,7 +98,7 @@ def test_create_recipe_omit_step_field(test_client: TestClient, recipe_payload_f
 
 
 def test_create_recipe_without_source(test_client: TestClient, recipe_payload_factory):
-    post_data = recipe_payload_factory(num_steps=2)
+    post_data = recipe_payload_factory(num_steps=2, num_ingredients=2)
     del post_data["source"]
     response = test_client.post("/api/v1/recipes", json=post_data)
     assert response.status_code == 201
@@ -66,7 +110,7 @@ def test_create_recipe_without_source(test_client: TestClient, recipe_payload_fa
 def test_create_recipe_duplicate_title(
     test_client: TestClient, recipe_payload_factory, test_user: User
 ):
-    post_data = recipe_payload_factory(num_steps=2)
+    post_data = recipe_payload_factory(num_steps=2, num_ingredients=2)
     post_data.update({"user_id": test_user.id})
     response = test_client.post("/api/v1/recipes", json=post_data)
     assert response.status_code == 201
@@ -78,7 +122,7 @@ def test_create_recipe_duplicate_title(
 def test_create_recipe_duplicate_title_without_user_id(
     test_client: TestClient, recipe_payload_factory
 ):
-    post_data = recipe_payload_factory(num_steps=2)
+    post_data = recipe_payload_factory(num_steps=2, num_ingredients=2)
     response = test_client.post("/api/v1/recipes", json=post_data)
     assert response.status_code == 201
     response2 = test_client.post("/api/v1/recipes", json=post_data)
@@ -97,6 +141,35 @@ def test_create_recipe_duplicate_title_without_user_id(
         ({"source": "a"}, "source"),
         ({"steps": [{"step_no": 0, "instruction": "test"}]}, "steps.0.step_no"),
         ({"steps": [{"step_no": 1, "instruction": "    "}]}, "steps.0.instruction"),
+        (
+            {
+                "recipe_ingredients": [
+                    {"ingredient_name": "test", "quantity": 0, "unit": "個"}
+                ]
+            },
+            "recipe_ingredients.0.quantity",
+        ),
+        (
+            {
+                "recipe_ingredients": [
+                    {"ingredient_name": "test", "quantity": 1, "unit": "枚"}
+                ]
+            },
+            "recipe_ingredients.0.unit",
+        ),
+        (
+            {
+                "recipe_ingredients": [
+                    {
+                        "ingredient_name": "test",
+                        "quantity": 1,
+                        "unit": "個",
+                        "note": "a" * 1001,
+                    }
+                ]
+            },
+            "recipe_ingredients.0.note",
+        ),
     ],
 )
 def test_create_recipe_invalid_fields(
@@ -105,7 +178,7 @@ def test_create_recipe_invalid_fields(
     invalid_data,
     expected_field,
 ):
-    post_data = recipe_payload_factory(num_steps=2)
+    post_data = recipe_payload_factory(num_steps=2, num_ingredients=2)
     post_data.update(invalid_data)
     response = test_client.post("/api/v1/recipes", json=post_data)
     assert response.status_code == 422
@@ -123,6 +196,17 @@ def test_get_recipe_by_id(test_client: TestClient, test_recipe: Recipe):
     assert len(data["steps"]) == len(test_recipe.steps)
     assert data["steps"][0]["step_no"] == test_recipe.steps[0].step_no
     assert data["steps"][0]["instruction"] == test_recipe.steps[0].instruction
+    assert (
+        float(data["recipe_ingredients"][0]["quantity"])
+        == test_recipe.recipe_ingredients[0].quantity
+    )
+    assert (
+        data["recipe_ingredients"][0]["unit"] == test_recipe.recipe_ingredients[0].unit
+    )
+    assert (
+        data["recipe_ingredients"][0]["ingredient"]["name"]
+        == test_recipe.recipe_ingredients[0].ingredient.name
+    )
 
 
 def test_get_recipe_by_id_not_found(test_client: TestClient):

@@ -69,8 +69,8 @@ class RecipeIngredient(Base):
     ingredient: Mapped[Ingredient] = relationship(back_populates="recipe_ingredients")
 
     __table_args__ = (
-        CheckConstraint("length(note) <= 1000", name="note_length_lte"),
         CheckConstraint("quantity > 0", name="quantity_gt"),
+        CheckConstraint("length(note) <= 1000", name="note_length_lte"),
         CheckConstraint(
             "note IS NULL OR length(trim(note)) >= 1", name="note_not_blank"
         ),

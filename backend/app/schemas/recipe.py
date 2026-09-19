@@ -12,6 +12,10 @@ from pydantic import (
 )
 
 from app.models.recipe import Difficulty
+from app.schemas.recipe_ingredients import (
+    RecipeIngredientCreate,
+    RecipeIngredientPublic,
+)
 from app.schemas.step import StepCreate, StepPublic, StepUpdate
 from app.schemas.user import UserSummary
 
@@ -49,6 +53,7 @@ class RecipeCreate(BaseModel):
     difficulty: Difficulty
     source: dict[str, Any] | None = None
     steps: list[StepCreate] = Field(default_factory=list)
+    recipe_ingredients: list[RecipeIngredientCreate] = Field(default_factory=list)
 
 
 class RecipeUpdate(BaseModel):
@@ -99,5 +104,6 @@ class RecipeDetail(BaseModel):
     updated_at: datetime
     user: UserSummary | None
     steps: list[StepPublic]
+    recipe_ingredients: list[RecipeIngredientPublic]
 
     model_config = ConfigDict(from_attributes=True)
