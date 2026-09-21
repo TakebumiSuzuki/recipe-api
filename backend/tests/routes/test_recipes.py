@@ -2,7 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from app.models import Recipe, Step, User, Ingredient
+from app.models import Ingredient, Recipe, Step, User
 
 
 def test_create_recipe_with_steps_and_ingredients(

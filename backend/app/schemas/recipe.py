@@ -15,6 +15,7 @@ from app.models.recipe import Difficulty
 from app.schemas.recipe_ingredients import (
     RecipeIngredientCreate,
     RecipeIngredientPublic,
+    RecipeIngredientUpdate,
 )
 from app.schemas.step import StepCreate, StepPublic, StepUpdate
 from app.schemas.user import UserSummary
@@ -42,6 +43,14 @@ RecipeDesc = Annotated[
 ]
 
 
+# default, default_factoryについて。Create系の場合、クライアントからの入力辞書の中に、
+# そのキーバリューが存在しない場合には、これらが使われセットされる(しかし、後段で
+# exclude_unset が設定されば drop される)。
+# 同様に、Read系の場合、from_attributes=Trueで、sqlalchemy モデルにその属性が存在しない
+# 場合には、この default, default_factoryが使われ補完される。しかし、通常の使用では、
+# SQLAlchemym モデルは通常カラムには必ず何がしかの値が入るし、relationshipカラムでは、
+# 該当するデータがない場合には、自動で [] などの空のリストを入れてくれるので、Read系で
+# これらが使われることは基本、ないと考えて良い。
 class RecipeCreate(BaseModel):
     user_id: int | None = (
         None  # このアプリではログイン機能がないので明示的に注入する仕様にする
@@ -64,6 +73,7 @@ class RecipeUpdate(BaseModel):
     difficulty: Difficulty | None = None
     source: dict[str, Any] | None = None
     steps: list[StepUpdate] | None = None
+    recipe_ingredients: list[RecipeIngredientUpdate] | None = None
 
     @field_validator("title", "servings", "cook_time_min", "difficulty")
     @classmethod

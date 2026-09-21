@@ -1,10 +1,16 @@
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from app.exceptions import RecipeAlreadyExists, RecipeNotFound, StepNotFound
+from app.exceptions import (
+    InvalidRecipeIngredientInput,
+    RecipeAlreadyExists,
+    RecipeNotFound,
+    StepNotFound,
+)
 from app.models import Recipe, RecipeIngredient, Step
 from app.models.ingredients import Ingredient
 from app.schemas.recipe import RecipeCreate, RecipeUpdate
+from app.schemas.recipe_ingredients import RecipeIngredientCreateInCRUD
 
 
 def create_recipe(db_session: Session, recipe_in: RecipeCreate):
@@ -53,10 +59,7 @@ def create_recipe(db_session: Session, recipe_in: RecipeCreate):
             recipe_ingredients.append(new_ri)
 
         else:
-            raise RuntimeError(
-                "RecipeIngredient must have either ingredient_id or ingredient_name. "
-                "This should have been caught by schema validation."
-            )
+            raise InvalidRecipeIngredientInput()
 
     new_recipe = Recipe(
         **(
@@ -95,34 +98,52 @@ def update_recipe(
 ) -> Recipe:
 
     stmt = (
-        select(Recipe).where(Recipe.id == recipe_id).options(selectinload(Recipe.steps))
+        select(Recipe)
+        .where(Recipe.id == recipe_id)
+        .options(
+            selectinload(Recipe.steps),
+            selectinload(Recipe.recipe_ingredients).selectinload(
+                RecipeIngredient.ingredient
+            ),
+        )
     )
     current_recipe = db_session.execute(stmt).scalar_one_or_none()
     if current_recipe is None:
         raise RecipeNotFound(recipe_id)
 
-    # user_id が None の場合には　user_id と title の組み合わせのユニーク制約は適用されない。
-    if current_recipe.user_id is not None:
-        # Recipe.id != current_recipe.id は、元々のタイトルと全く同じタイトルを patch データーに
-        # 入れてしまった場合、元々のレコードに対して重複だ、と判断してしまうのを防ぐため。
+    # 以下の部分は、アップデートする前に、user_id x title のユニーク制約に抵触しないか。
+    # 注意: そもそも user_id が None の場合には　user_id と title の
+    # 組み合わせのユニーク制約はすり抜ける。
+    # また、タイトルの変更データ in が　Noneの場合にはこの作業はスキップする。
+    if current_recipe.user_id is not None and recipe_in.title is not None:
+        # Recipe.id != current_recipe.id は、元々のタイトルと全く同じタイトルを
+        # patch データーに入れてしまった場合、元々のレコードに対して重複だ、
+        # と判断してしまうのを防ぐため。
         stmt = select(Recipe).where(
             Recipe.user_id == current_recipe.user_id,
             Recipe.title == recipe_in.title,
             Recipe.id != current_recipe.id,
         )
-        duplicated_recipe = db_session.execute(stmt).scalar_one_or_none()
-        if duplicated_recipe:
-            raise RecipeAlreadyExists(title=duplicated_recipe.title)
+        conflicting_recipe = db_session.execute(stmt).scalar_one_or_none()
+        if conflicting_recipe:
+            raise RecipeAlreadyExists(title=conflicting_recipe.title)
 
-    recipe_update_data = recipe_in.model_dump(exclude={"steps"}, exclude_unset=True)
+    recipe_update_data = recipe_in.model_dump(
+        exclude={"steps", "recipe_ingredients"}, exclude_unset=True
+    )
+    # 入れ子データ (steps, reciepe_ingredients など) 以外の部分のみをまず、書き換え
     for k, v in recipe_update_data.items():
         setattr(current_recipe, k, v)
 
+    # steps の部分の処理。クライアント（ブラウザ）側が実装すべき仕様は、
+    # steps に手を加えない場合には stepsキーバリューを一切送らない → 変更なし
+    # 1つの step でも変更するなら残したいものも含めて全 step をセットで送る。
+    # また、steps: []　というふうに送ると、(Noneではないので)全 step が消える。
     if recipe_in.steps is not None:
         current_step_map = {step.id: step for step in current_recipe.steps}
 
         incoming_step_map = {
-            step.id: step for step in recipe_in.steps if step.id is not None
+            step_in.id: step_in for step_in in recipe_in.steps if step_in.id is not None
         }
         invalid_step_ids = incoming_step_map.keys() - current_step_map.keys()
         if invalid_step_ids:
@@ -130,26 +151,111 @@ def update_recipe(
 
         step_ids_to_update = current_step_map.keys() & incoming_step_map.keys()
         step_ids_to_delete = current_step_map.keys() - incoming_step_map.keys()
-        steps_to_create = [step for step in recipe_in.steps if step.id is None]
+        steps_to_create = [step_in for step_in in recipe_in.steps if step_in.id is None]
 
-        for step_id in step_ids_to_delete:
-            db_session.delete(current_step_map[step_id])
-        # セッションから実際に commit() の時に送られるSQLの順序は保証されないので、ここで flush で DB の状態を変えておかないとstep の重複のエラーが出るケースが生じてしまう
+        for delete_id in step_ids_to_delete:
+            db_session.delete(current_step_map[delete_id])
+        # セッションから実際に commit() の時にまとめて送られるSQLの順序は保証されない
+        # ので、ここで flush で DB の状態を変えておかないと step の重複のエラーが出る
+        # ケースが生じてしまう
         db_session.flush()
-        for step_id in step_ids_to_update:
+
+        # exclude={"id"} について、これはなくても良いが、明示的に id は変更していないという
+        # 意図を示すため入れている。(ちなみに、PostgreSQL でも SQLAlchemy側 でも、
+        # Primary Key（主キー）の値を UPDATE で変更すること自体は可能。)
+        for update_id in step_ids_to_update:
             for k, v in (
-                incoming_step_map[step_id]
+                incoming_step_map[update_id]
                 .model_dump(exclude={"id"}, exclude_unset=True)
                 .items()
             ):
-                setattr(current_step_map[step_id], k, v)
+                setattr(current_step_map[update_id], k, v)
 
         for step_in in steps_to_create:
             new_step = Step(**step_in.model_dump(exclude={"id"}))
             current_recipe.steps.append(new_step)
 
+    if recipe_in.recipe_ingredients is not None:
+        # sqlalchemyの relationship 機能の仕様で、current_ris は最低でも []。
+        # 見つからなくても、Noneにはならない。
+        current_ris = current_recipe.recipe_ingredients
+        # recipe_id の方は全て同一になるので気にする必要はない。
+        current_ris_ing_id_map = {ri.ingredient_id: ri for ri in current_ris}
+
+        incoming_ris_ing_id_map = {}
+        incoming_ris_name_map = {}
+
+        for ri_in in recipe_in.recipe_ingredients:
+            incoming_ri = ri_in.model_dump(exclude_unset=True)
+
+            has_id = incoming_ri.get("ingredient_id") is not None
+            has_name = incoming_ri.get("ingredient_name") is not None
+
+            if has_id and not has_name:
+                incoming_ris_ing_id_map[incoming_ri["ingredient_id"]] = incoming_ri
+            elif not has_id and has_name:
+                ig_name = incoming_ri["ingredient_name"]
+                stmt = select(Ingredient).where(Ingredient.name == ig_name)
+                result = db_session.execute(stmt).scalar_one_or_none()
+                if result is None:
+                    incoming_ris_name_map[ig_name] = incoming_ri
+                else:
+                    # nameを送ってきたけどすでに ingredient が存在しているので、すげ替える
+                    del incoming_ri["ingredient_name"]
+                    incoming_ri["ingredient_id"] = result.id
+                    incoming_ris_ing_id_map[result.id] = incoming_ri
+            else:
+                raise InvalidRecipeIngredientInput()
+
+        to_delete_ri_ing_ids = (
+            current_ris_ing_id_map.keys() - incoming_ris_ing_id_map.keys()
+        )
+        # 元々繋がっていなかった ing が指定されて送られてきた場合
+        to_add_ri_ing_ids = (
+            incoming_ris_ing_id_map.keys() - current_ris_ing_id_map.keys()
+        )
+        to_update_ri_ing_ids = (
+            current_ris_ing_id_map.keys() & incoming_ris_ing_id_map.keys()
+        )
+
+        for delete_ing_id in to_delete_ri_ing_ids:
+            delete_ri = current_ris_ing_id_map[delete_ing_id]
+            db_session.delete(delete_ri)
+
+        for update_ing_id in to_update_ri_ing_ids:
+            update_ri = current_ris_ing_id_map[update_ing_id]
+            update_data = incoming_ris_ing_id_map[update_ing_id]
+            update_data.pop("ingredient_name", None)
+            update_data.pop("ingredient_id", None)
+            # del update_data["ingredient_name"]
+            # del update_data["ingredient_id"]
+            for k, v in update_data.items():
+                setattr(update_ri, k, v)
+
+        # すでにある ingredient_id と recipe_id を使って新しいつながりを作る
+        for add_ing_id in to_add_ri_ing_ids:
+            add_data = incoming_ris_ing_id_map[add_ing_id]
+            add_data.update({"recipe_id": recipe_id})
+            new_ri = RecipeIngredient(
+                **RecipeIngredientCreateInCRUD(**add_data).model_dump()
+            )
+            current_recipe.recipe_ingredients.append(new_ri)
+
+        for new_ig_name, create_data in incoming_ris_name_map.items():
+            new_ingredient = Ingredient(name=new_ig_name)
+            db_session.add(new_ingredient)
+            db_session.flush()
+            create_data.update(
+                {"recipe_id": recipe_id, "ingredient_id": new_ingredient.id}
+            )
+            new_ri = RecipeIngredient(
+                **RecipeIngredientCreateInCRUD(**create_data).model_dump()
+            )
+
+            current_recipe.recipe_ingredients.append(new_ri)
+
     db_session.commit()
-    db_session.refresh(current_recipe)
+    db_session.refresh(current_recipe, attribute_names=["steps", "recipe_ingredients"])
     return current_recipe
 
 

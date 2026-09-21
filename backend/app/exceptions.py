@@ -105,3 +105,12 @@ class IngredientNotFound(APIException):
             detail=f"Ingredient id:{ingredient_id} not found",
             details={"ingredient_id": ingredient_id},
         )
+
+
+class InvalidRecipeIngredientInput(APIException):
+    def __init__(self):
+        super().__init__(
+            status_code=422,
+            code="INVALID_RECIPE_INGREDIENT_INPUT",
+            detail="材料にはIDまたは名前のいずれか一方のみを指定してください。",
+        )
