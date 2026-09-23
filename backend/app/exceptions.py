@@ -140,7 +140,7 @@ class TagAlreadyAttached(APIException):
     def __init__(self, tag_name: str):
         super().__init__(
             status_code=409,
-            code="TAG_ALREADY_ADDED",
+            code="TAG_ALREADY_ATTACHED",
             detail=f"Tag name:{tag_name} is already added to this recipe.",
             details={"tag_name": tag_name},
         )

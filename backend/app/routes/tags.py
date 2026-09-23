@@ -26,3 +26,16 @@ def add_tag_to_recipe(
         tag_in=tag_in,
     )
     return tags
+
+
+@router.delete("/recipes/{recipe_id}/tags/{tag_name}", status_code=204)
+def remove_tag_from_recipe(
+    db_session: Annotated[Session, Depends(get_db_session)],
+    recipe_id: Annotated[int, Path()],
+    tag_name: Annotated[str, Path()],
+) -> None:
+    crud_tag.remove_tag_from_recipe(
+        db_session=db_session,
+        recipe_id=recipe_id,
+        tag_name=tag_name,
+    )

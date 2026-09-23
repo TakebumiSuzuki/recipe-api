@@ -66,3 +66,18 @@ def add_tag_to_recipe(
     db_session.refresh(recipe, attribute_names=["tags"])
 
     return recipe.tags
+
+
+def remove_tag_from_recipe(
+    db_session: Session,
+    recipe_id: int,
+    tag_name: str,
+) -> None:
+    recipe = crud_recipe.get_recipe_by_id(db_session=db_session, recipe_id=recipe_id)
+    if recipe is None:
+        raise RecipeNotFound(recipe_id=recipe_id)
+    for tag in recipe.tags:
+        if tag.name == tag_name:
+            recipe.tags.remove(tag)
+            break
+    db_session.commit()

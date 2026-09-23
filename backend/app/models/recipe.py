@@ -22,6 +22,7 @@ from app.models.base import Base
 
 if TYPE_CHECKING:
     from app.models.ingredients import RecipeIngredient
+    from app.models.nutrition import Nutrition
     from app.models.step import Step
     from app.models.tag import Tag
     from app.models.user import User
@@ -90,6 +91,12 @@ class Recipe(Base):
         back_populates="recipes",
         # どのテーブルを経由して Tag を探せばいいかを SQLAlchemy に教える
         secondary="recipe_tags",
+    )
+
+    nutrition: Mapped["Nutrition | None"] = relationship(
+        back_populates="recipe",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
     )
 
     __table_args__ = (

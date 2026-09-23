@@ -68,7 +68,7 @@ FastAPI の学習で身につけた内容を、**手本を見ずに自分で設�
     │
     │ 1対多：1人の投稿者が複数のレシピを持つ
     ↓
-  recipes （レシピ）─── 1対1 ───→ nutrition_facts （栄養情報）
+  recipes （レシピ）─── 1対1 ───→ nutritions （栄養情報）
     │
     ├── 1対多 ──→ steps （手順。1,2,3… と順序を持つ）
     │
@@ -260,7 +260,7 @@ SQLAlchemy でどう書くか（`mapped_column` の引数など）はモデル�
 `recipe_id` と `tag_id` の2つの外部キーのみ。この2つで複合主キー。
 モデルクラスは作らず、SQLAlchemy の `Table` として定義する。
 
-### nutrition_facts（栄養情報）
+### nutritions（栄養情報）
 
 | 意図 | 内容 |
 | --- | --- |
@@ -469,7 +469,7 @@ SQLAlchemy 側では `relationship()` に「1件しか返さない」設定を�
 - **API**：タグの付け外し2本
 - **終わったと言える状態**：同じタグを2回付けても重複行が増えない
 
-#### Step 11. `nutrition_facts`（1対1）
+#### Step 11. `nutritions`（1対1）
 
 - **学ぶこと**：外部キーを主キーにして1対1を DB レベルで保証する方法
 - **API**：`PUT /recipes/{recipe_id}/nutrition`（無ければ作る、有れば置き換える）
