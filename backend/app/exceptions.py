@@ -114,3 +114,33 @@ class InvalidRecipeIngredientInput(APIException):
             code="INVALID_RECIPE_INGREDIENT_INPUT",
             detail="材料にはIDまたは名前のいずれか一方のみを指定してください。",
         )
+
+
+class TagAlreadyExists(APIException):
+    def __init__(self, tag_name: str):
+        super().__init__(
+            status_code=409,
+            code="TAG_ALREADY_EXISTS",
+            detail=f"Tag name:{tag_name} already exists",
+            details={"tag_name": tag_name},
+        )
+
+
+class TagNotFound(APIException):
+    def __init__(self, tag_id: int):
+        super().__init__(
+            status_code=404,
+            code="TAG_NOT_FOUND",
+            detail=f"Tag id:{tag_id} not found.",
+            details={"tag_id": tag_id},
+        )
+
+
+class TagAlreadyAttached(APIException):
+    def __init__(self, tag_name: str):
+        super().__init__(
+            status_code=409,
+            code="TAG_ALREADY_ADDED",
+            detail=f"Tag name:{tag_name} is already added to this recipe.",
+            details={"tag_name": tag_name},
+        )

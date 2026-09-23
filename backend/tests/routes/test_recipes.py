@@ -2,7 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from app.models import Ingredient, Recipe, Step, User
+from app.models import Ingredient, Recipe, RecipeIngredient, Step, User
 
 
 def test_create_recipe_with_steps_and_ingredients(
@@ -216,7 +216,7 @@ def test_get_recipe_by_id_not_found(test_client: TestClient):
     assert data["error"]["code"] == "RECIPE_NOT_FOUND"
 
 
-def test_update_recipe(
+def test_update_recipe_with_steps(
     test_client: TestClient,
     test_recipe: Recipe,
     recipe_payload_factory,
@@ -225,6 +225,7 @@ def test_update_recipe(
 
     patch_data["steps"][0]["id"] = test_recipe.steps[0].id
     patch_data["steps"][1]["id"] = test_recipe.steps[1].id
+    del patch_data["recipe_ingredients"]
 
     response = test_client.patch(f"/api/v1/recipes/{test_recipe.id}", json=patch_data)
     assert response.status_code == 200
@@ -240,6 +241,37 @@ def test_update_recipe(
 
     assert data["steps"][1]["id"] == test_recipe.steps[1].id
     assert data["steps"][1]["instruction"] == patch_data["steps"][1]["instruction"]
+
+
+def test_update_recipe_with_ingredients(
+    test_client: TestClient,
+    test_recipe: Recipe,
+    recipe_payload_factory,
+):
+    patch_data = recipe_payload_factory(num_steps=0, num_ingredients=1)
+
+    del patch_data["recipe_ingredients"][0]["ingredient_name"]
+    patch_data["recipe_ingredients"][0]["ingredient_id"] = (
+        test_recipe.recipe_ingredients[0].ingredient_id
+    )
+
+    response = test_client.patch(f"/api/v1/recipes/{test_recipe.id}", json=patch_data)
+    assert response.status_code == 200
+    data = response.json()
+    # 1. レシピ本体が更新されていること
+    assert data["title"] == patch_data["title"]
+    assert data["description"] == patch_data["description"]
+
+    # 2. ステップが 2 つとも正しく更新されていること
+    assert len(data["recipe_ingredients"]) == 1
+    assert (
+        data["recipe_ingredients"][0]["ingredient_id"]
+        == test_recipe.recipe_ingredients[0].ingredient_id
+    )
+    assert (
+        data["recipe_ingredients"][0]["ingredient"]["name"]
+        == test_recipe.recipe_ingredients[0].ingredient.name
+    )
 
 
 def test_update_recipe_step_delete(
@@ -445,10 +477,15 @@ def test_update_recipe_same_title_with_user_id(
 
 
 def test_delete_recipe(
-    test_client: TestClient, test_recipe: Recipe, db_session: Session
+    test_client: TestClient,
+    test_recipe: Recipe,
+    db_session: Session,
 ):
     steps_to_delete = [step.id for step in test_recipe.steps]
     assert len(steps_to_delete) > 0
+    ri_to_delete = [ri.ingredient_id for ri in test_recipe.recipe_ingredients]
+    assert len(ri_to_delete) > 0
+    recipe_id = test_recipe.id
 
     response = test_client.delete(f"/api/v1/recipes/{test_recipe.id}")
     assert response.status_code == 204
@@ -457,8 +494,19 @@ def test_delete_recipe(
     data = response_2.json()
     assert data["error"]["code"] == "RECIPE_NOT_FOUND"
 
+    # 以下は N+1 になっているが、テスト環境なので、問題ない
     for step_id in steps_to_delete:
         assert db_session.get(Step, step_id) is None
+    for ing_id in ri_to_delete:
+        # db_session.get() に複合主キーをタプルで渡す場合、モデルで定義された主キー
+        # の順番通りに渡す必要があります。つまり recipe_id の方を先に書く
+        ri = db_session.get(RecipeIngredient, (recipe_id, ing_id))
+        assert ri is None
+
+    # RDB の CASCADE は、親（Recipe）が消えたら子（RecipeIng）を消す」という一方向の仕組み。
+    # 子（中間テーブル）が消えたからといって、反対側の親（Ingredient）まで巻き添えで消えるような
+    # 仕組みは RDBには存在しない（トリガー等を仕込んでいない限り）。
+    # つまり、Recipe を delete したときに、Ingredient が残っているかを調べるテストは必要ない。
 
 
 def test_delete_recipe_not_found(test_client: TestClient):

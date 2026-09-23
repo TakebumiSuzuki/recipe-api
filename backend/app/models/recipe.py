@@ -23,6 +23,7 @@ from app.models.base import Base
 if TYPE_CHECKING:
     from app.models.ingredients import RecipeIngredient
     from app.models.step import Step
+    from app.models.tag import Tag
     from app.models.user import User
 
 
@@ -83,6 +84,12 @@ class Recipe(Base):
         back_populates="recipe",
         cascade="all, delete-orphan",
         passive_deletes=True,
+    )
+
+    tags: Mapped[list["Tag"]] = relationship(
+        back_populates="recipes",
+        # どのテーブルを経由して Tag を探せばいいかを SQLAlchemy に教える
+        secondary="recipe_tags",
     )
 
     __table_args__ = (

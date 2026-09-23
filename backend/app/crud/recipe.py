@@ -72,7 +72,7 @@ def create_recipe(db_session: Session, recipe_in: RecipeCreate):
     )
     db_session.add(new_recipe)
     db_session.commit()
-    db_session.refresh(new_recipe)
+    db_session.refresh(new_recipe, attribute_names=["steps", "recipe_ingredients"])
     return new_recipe
 
 
@@ -85,6 +85,7 @@ def get_recipe_by_id(db_session: Session, recipe_id: int) -> Recipe | None:
             selectinload(Recipe.recipe_ingredients).selectinload(
                 RecipeIngredient.ingredient
             ),
+            selectinload(Recipe.tags),
         )
     )
     recipe = db_session.execute(stmt).scalar_one_or_none()
