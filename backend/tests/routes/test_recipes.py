@@ -1,8 +1,10 @@
+from decimal import Decimal
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from app.models import Ingredient, Recipe, RecipeIngredient, Step, User
+from app.models import Ingredient, Nutrition, Recipe, RecipeIngredient, Step, User
 
 
 def test_create_recipe_with_steps_and_ingredients(
@@ -207,6 +209,32 @@ def test_get_recipe_by_id(test_client: TestClient, test_recipe: Recipe):
         data["recipe_ingredients"][0]["ingredient"]["name"]
         == test_recipe.recipe_ingredients[0].ingredient.name
     )
+    assert data["nutrition"] is None
+
+
+def test_get_recipe_by_id_with_nutrition(
+    db_session: Session,
+    test_client: TestClient,
+    test_recipe: Recipe,
+):
+    nutrition = Nutrition(
+        recipe_id=test_recipe.id,
+        calories=Decimal("555.3"),
+        protein_g=Decimal("12.4"),
+        fat_g=Decimal("22.1"),
+        carb_g=Decimal("33.9"),
+    )
+    test_recipe.nutrition = nutrition
+    db_session.commit()
+    response = test_client.get(f"/api/v1/recipes/{test_recipe.id}")
+    assert response.status_code == 200
+    data = response.json()
+    assert "nutrition" in data
+    assert data["nutrition"]["recipe_id"] == test_recipe.id
+    assert data["nutrition"]["calories"] == str(nutrition.calories)
+    assert data["nutrition"]["protein_g"] == str(nutrition.protein_g)
+    assert data["nutrition"]["fat_g"] == str(nutrition.fat_g)
+    assert data["nutrition"]["carb_g"] == str(nutrition.carb_g)
 
 
 def test_get_recipe_by_id_not_found(test_client: TestClient):
@@ -513,3 +541,18 @@ def test_delete_recipe_not_found(test_client: TestClient):
     response = test_client.delete("/api/v1/recipes/9999")
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "RECIPE_NOT_FOUND"
+
+
+def test_get_recipes(test_client: TestClient, sample_recipes: list[Recipe]):
+    response = test_client.get("/api/v1/recipes", params={"tag": "和食"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 1
+    assert len(data["items"]) == 1
+
+    item = data["items"][0]
+    assert item["id"] == sample_recipes[0].id
+    assert item["title"] == sample_recipes[0].title
+
+    tag_names = [t["name"] for t in item["tags"]]
+    assert "和食" in tag_names

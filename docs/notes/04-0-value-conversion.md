@@ -152,6 +152,21 @@ cursor.execute(
 
 そのため、SQLAlchemy の `result_processor`（これも型オブジェクトが Dialect ごとに提供する復元関数）はほとんどの列で素通りし、出番があるのは `Enum`（文字列から Python の Enum クラスへ復元）など一部のドメイン型に限られます。
 
+### 実例コラム：`Numeric` 列に `float`（555.3）を渡したときの行き来
+
+`calories: Mapped[Decimal] = mapped_column(Numeric(8, 2))` のような列に、Python の `float`（例: `555.3`）を渡してもエラーにならず、取得時には `Decimal('555.30')` として返ってくる流れは、この 3 層の連携の良い実例です。
+
+- **書き込み時（Python → DB）**:
+  1. **SQLAlchemy**: PostgreSQL 用 `Numeric` の `bind_processor` は **`None`**（素通り）。`float` のまま psycopg へ渡す。
+  2. **psycopg**: 値の Python 型（`float`）を見て、そのまま浮動小数点パラメータとして送信。
+  3. **PostgreSQL**: カラム定義が `NUMERIC(8, 2)` なので、DB 側が受け取った浮動小数点数を `numeric(8, 2)`（`555.30`）へと型キャストして保存。
+- **読み取り時（DB → Python）**:
+  1. **PostgreSQL**: `NUMERIC` 型（内部 OID 1700）としてデータを返却。
+  2. **psycopg**: OID 1700 を検知し、psycopg 自体がネイティブで Python の **`Decimal('555.30')`** に変換・復元。
+  3. **SQLAlchemy**: `result_processor` も **`None`**（psycopg がすでに `Decimal` を返しているため素通り）。
+
+このように、SQLAlchemy は前処理・後処理を挟まず（両プロセッサとも `None`）、psycopg のネイティブ機能と PostgreSQL の自動型キャストに委ねることで無駄のない連携を実現しています。
+
 ---
 
 ## 4. 型変換の対応表

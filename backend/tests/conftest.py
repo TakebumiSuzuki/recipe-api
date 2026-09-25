@@ -1,4 +1,5 @@
 from collections.abc import Generator
+from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -8,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.deps import get_db_session
 from app.main import app
-from app.models import Base, Ingredient, Recipe, RecipeIngredient, Step, User
+from app.models import Base, Ingredient, Recipe, RecipeIngredient, Step, Tag, User
 
 
 @pytest.fixture(scope="session")
@@ -120,3 +121,49 @@ def test_ingredient(db_session: Session) -> Ingredient:
     db_session.commit()
     db_session.refresh(ingredient)
     return ingredient
+
+
+@pytest.fixture
+def sample_recipes(
+    db_session: Session,
+    test_user: User,
+) -> list[Recipe]:
+    """テスト用に特徴の異なる3件のレシピを用意する"""
+    tag_washoku = Tag(name="和食")
+    tag_yoshoku = Tag(name="洋食")
+
+    # レシピA：easy / 和食 / 公開中 / test_user
+    r_a = Recipe(
+        title="和食カレー",
+        servings=2,
+        cook_time_min=20,
+        difficulty="easy",
+        published_at=datetime.now(UTC),
+        user=test_user,
+        tags=[tag_washoku],
+    )
+    # レシピB：hard / 洋食 / 公開中 / test_user
+    r_b = Recipe(
+        title="本格フレンチ",
+        servings=2,
+        cook_time_min=60,
+        difficulty="hard",
+        published_at=datetime.now(UTC),
+        user=test_user,
+        tags=[tag_yoshoku],
+    )
+    # レシピC：normal / 洋食 / 未公開(None) / 投稿者なし(None)
+    r_c = Recipe(
+        title="下書きパスタ",
+        servings=1,
+        cook_time_min=15,
+        difficulty="normal",
+        published_at=None,
+        user=None,
+        tags=[tag_yoshoku],
+    )
+
+    db_session.add_all([tag_washoku, tag_yoshoku, r_a, r_b, r_c])
+    db_session.commit()
+
+    return [r_a, r_b, r_c]

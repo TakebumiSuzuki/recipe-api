@@ -8,6 +8,7 @@ from app.core.error_handlers import register_error_handlers
 from app.core.logging_config import setup_logging
 from app.deps import get_db_session
 from app.routes.ingredients import router as ingredients_router
+from app.routes.nutritions import router as nutritions_router
 from app.routes.recipes import router as recipes_router
 from app.routes.tags import router as tags_router
 from app.routes.users import router as users_router
@@ -19,6 +20,7 @@ app.include_router(users_router)
 app.include_router(recipes_router)
 app.include_router(ingredients_router)
 app.include_router(tags_router)
+app.include_router(nutritions_router)
 
 register_error_handlers(app=app)
 

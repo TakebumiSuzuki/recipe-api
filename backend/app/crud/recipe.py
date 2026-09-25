@@ -1,5 +1,7 @@
-from sqlalchemy import select
-from sqlalchemy.orm import Session, selectinload
+from collections.abc import Sequence
+
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.exceptions import (
     InvalidRecipeIngredientInput,
@@ -7,7 +9,7 @@ from app.exceptions import (
     RecipeNotFound,
     StepNotFound,
 )
-from app.models import Recipe, RecipeIngredient, Step
+from app.models import Difficulty, Recipe, RecipeIngredient, Step, Tag
 from app.models.ingredients import Ingredient
 from app.schemas.recipe import RecipeCreate, RecipeUpdate
 from app.schemas.recipe_ingredients import RecipeIngredientCreateInCRUD
@@ -86,6 +88,7 @@ def get_recipe_by_id(db_session: Session, recipe_id: int) -> Recipe | None:
                 RecipeIngredient.ingredient
             ),
             selectinload(Recipe.tags),
+            joinedload(Recipe.nutrition),
         )
     )
     recipe = db_session.execute(stmt).scalar_one_or_none()
@@ -267,3 +270,44 @@ def delete_recipe(db_session: Session, recipe_id: int):
         raise RecipeNotFound(recipe_id=recipe_id)
     db_session.delete(recipe_to_delete)
     db_session.commit()
+
+
+def get_recipes(
+    db_session: Session,
+    tag: str | None,
+    difficulty: Difficulty | None,
+    user_id: int | None,
+    is_published: bool | None,
+    limit: int,
+    offset: int,
+) -> tuple[Sequence[Recipe], int]:
+
+    stmt = select(Recipe)
+
+    if tag:
+        stmt = stmt.where(Recipe.tags.any(Tag.name == tag))
+    if difficulty:
+        stmt = stmt.where(Recipe.difficulty == difficulty)
+    if user_id:
+        stmt = stmt.where(Recipe.user_id == user_id)
+    if is_published is True:
+        stmt = stmt.where(Recipe.published_at.is_not(None))
+    elif is_published is False:
+        stmt = stmt.where(Recipe.published_at.is_(None))
+
+    count_stmt = select(func.count()).select_from(stmt.subquery())
+    total = db_session.scalar(count_stmt) or 0
+
+    stmt = (
+        stmt.limit(limit)
+        .offset(offset)
+        .order_by(Recipe.updated_at.desc())
+        .options(
+            selectinload(Recipe.tags),
+            selectinload(Recipe.user),
+        )
+    )
+
+    recipes = db_session.execute(stmt).scalars().all()
+
+    return recipes, total

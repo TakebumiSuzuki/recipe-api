@@ -1,13 +1,18 @@
-from typing import Annotated
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Body, Depends, Path
+from fastapi import APIRouter, Body, Depends, Path, Query
 from sqlalchemy.orm import Session
 
 from app.crud import recipe as crud_recipe
 from app.deps import get_db_session
 from app.exceptions import RecipeNotFound
-from app.models import Recipe
-from app.schemas.recipe import RecipeCreate, RecipeDetail, RecipeUpdate
+from app.models import Difficulty, Recipe
+from app.schemas.recipe import (
+    RecipeCreate,
+    RecipeDetail,
+    RecipeListResponse,
+    RecipeUpdate,
+)
 
 router = APIRouter(prefix="/api/v1/recipes", tags=["recipes"])
 
@@ -50,3 +55,33 @@ def delete_recipe(
     recipe_id: Annotated[int, Path()],
 ):
     crud_recipe.delete_recipe(db_session=db_session, recipe_id=recipe_id)
+
+
+@router.get("", response_model=RecipeListResponse)
+def get_recipes(
+    db_session: Annotated[Session, Depends(get_db_session)],
+    tag: Annotated[str | None, Query()] = None,
+    difficulty: Annotated[Difficulty | None, Query()] = None,
+    user_id: Annotated[int | None, Query()] = None,
+    is_published: Annotated[bool | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> dict[str, Any]:
+
+    recipes, total = crud_recipe.get_recipes(
+        db_session=db_session,
+        tag=tag,
+        difficulty=difficulty,
+        user_id=user_id,
+        is_published=is_published,
+        limit=limit,
+        offset=offset,
+    )
+    result_dic = {
+        "items": recipes,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+    return result_dic

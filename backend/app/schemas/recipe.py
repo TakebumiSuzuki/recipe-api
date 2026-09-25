@@ -12,12 +12,14 @@ from pydantic import (
 )
 
 from app.models.recipe import Difficulty
+from app.schemas.nutrition import NutritionPublic
 from app.schemas.recipe_ingredients import (
     RecipeIngredientCreate,
     RecipeIngredientPublic,
     RecipeIngredientUpdate,
 )
 from app.schemas.step import StepCreate, StepPublic, StepUpdate
+from app.schemas.tag import TagPublic
 from app.schemas.user import UserSummary
 
 
@@ -88,13 +90,12 @@ class RecipeSummary(BaseModel):
     user_id: int | None
     title: str
     description: str | None
-    # servings: int
     cook_time_min: int
     difficulty: Difficulty
-    # source: dict[str, Any] | None
     published_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    tags: list[TagPublic]
     user: UserSummary | None
 
     model_config = ConfigDict(from_attributes=True)
@@ -115,5 +116,13 @@ class RecipeDetail(BaseModel):
     user: UserSummary | None
     steps: list[StepPublic]
     recipe_ingredients: list[RecipeIngredientPublic]
+    nutrition: NutritionPublic | None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class RecipeListResponse(BaseModel):
+    items: list[RecipeSummary]
+    total: int
+    limit: int
+    offset: int
