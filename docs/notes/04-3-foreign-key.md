@@ -31,21 +31,6 @@
 user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
 ```
 
-### テーブル作成時のカラムの型は「参照先の列」から決まる。注釈は使われない
-
-**`ForeignKey` を付けた列の型は、注釈ではなく参照先の列からコピーされる。**
-
-```python
-user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))   # ここで注釈を str としてみても。。
-```
-
-| | 結果（実測） |
-|---|---|
-| 生成された型 | `INTEGER` ← 参照先 `users.id` の型になる。`str` は無視された |
-
-注釈が効くのは **NULL 許容かどうか**（`Mapped[int]` → NOT NULL、`Mapped[int | None]` → NULL可）と、
-mypy / pyright などの型チェッカー向けの情報としてだけ。
-
 ### `ForeignKey` に書くのは「テーブル名.カラム名」
 
 **クラス名ではない。** `__tablename__` に書いた名前のほう。
@@ -139,7 +124,7 @@ RESTRICT | CASCADE | SET NULL | SET DEFAULT | NO ACTION
   session.delete(user)   ──①【メモリ】親に「削除予定」フラグ。ロード済みの子にも削除フラグ（SQLは出ない）
         │                     ※ 未ロードの子は SELECT せず放置
   session.flush()        ──②【SQL発行】ロード済みの子に DELETE → 親に DELETE を送信
-        │                     └─ DELETE FROM recipes WHERE recipes.id IN (...);
+        │                     └─ DELETE FROM recipes WHERE recipes.id IN (...); -> 1回のSQLで一括処理
         │                     └─ DELETE FROM users WHERE users.id = 1;
     [PostgreSQL]         ──③【DB内部】ON DELETE CASCADE が発動し、未ロードだった子を削除
         │
@@ -161,18 +146,32 @@ RESTRICT | CASCADE | SET NULL | SET DEFAULT | NO ACTION
       passive_deletes=True,  # cascade は書かない
   )
   ```
-  * PostgreSQL では `NO ACTION` でも同様に機能する（子が残っていれば削除を拒絶）。
+  * PostgreSQL では `NO ACTION` もほぼ同じと考えて良い。（子が残っていれば削除を拒絶）。
+  * SQLAlchemy側では、cascade を指定しない場合、「親が消えるなら、子の外部キーを NULL にして切り離そう」と動作する（de-association）。
 
 * **実行時の動作（時系列）**
+  子レコードが「未ロードか」「ロード済みか」によってエラーになる経路が異なります（どちらの場合でも親の削除は阻止されます）。
+
+  **【ケースA：子がすべて未ロードの場合（一般的なケース）】**
   ```text
-  session.delete(user)   ──①【メモリ】親に「削除予定」フラグ。ロード済みの子の FK を None に設定
-        │                     ※ 未ロードの子は SELECT せず放置
-  session.flush()        ──②【SQL発行】ロード済みの子に UPDATE SET NULL → 親に DELETE を送信
-        │                     └─ UPDATE recipes SET user_id = NULL WHERE ...;
-        │                     └─ DELETE FROM users WHERE users.id = 1;
-    [PostgreSQL]         ──③【DB内部】未ロードの子が残っているため外部キー制約違反でクエリ拒絶！
+  session.delete(user)   ──①【メモリ】親に「削除予定」フラグ（未ロードの子は SELECT せず放置）
         │
-      [Error]           ──④【安全停止】IntegrityError でロールバック（親も子も無傷で残る）
+  session.flush()        ──②【SQL発行】親の DELETE だけを送信
+        │                     └─ DELETE FROM users WHERE users.id = 1;
+    [PostgreSQL]         ──③【DB内部】未ロードの子が残っているため、外部キー制約 (RESTRICT) で拒絶！
+        │
+      [Error]           ──④【安全停止】IntegrityError (FOREIGN KEY constraint failed) でロールバック
+  ```
+
+  **【ケースB：ロード済みの子がいる場合】**
+  ```text
+  session.delete(user)   ──①【メモリ】親に「削除予定」フラグ。ロード済みの子の FK を None にする変更フラグ
+        │
+  session.flush()        ──②【SQL発行】ロード済みの子を NULL にしようと UPDATE を送信
+        │                     └─ UPDATE recipes SET user_id = NULL WHERE ...;
+    [PostgreSQL]         ──③【DB内部】user_id は NOT NULL のため、NOT NULL 制約違反で拒絶！
+        │                     ※ 親の DELETE FROM users は送信すらされない
+      [Error]           ──④【安全停止】IntegrityError (NOT NULL constraint failed) でロールバック
   ```
 
 ---
@@ -194,7 +193,7 @@ RESTRICT | CASCADE | SET NULL | SET DEFAULT | NO ACTION
 
 * **実行時の動作（時系列）**
   ```text
-  session.delete(user)   ──①【メモリ】親に「削除予定」フラグ。ロード済みの子の user_id を None に設定
+  session.delete(user)   ──①【メモリ】親に「削除予定」フラグ。ロード済みの子の user_id を None にする変更フラグ
         │                     ※ 未ロードの子は SELECT せず放置
   session.flush()        ──②【SQL発行】ロード済みの子に UPDATE SET NULL → 親に DELETE を送信
         │                     └─ UPDATE recipes SET user_id = NULL WHERE ...;
@@ -223,30 +222,45 @@ RESTRICT | CASCADE | SET NULL | SET DEFAULT | NO ACTION
   )
   ```
   * **`server_default="..."` の指定が必須**。DB カラムにデフォルト値が設定されていないと更新時にエラーになる。
+  * カラム型は `Mapped[int]`（NOT NULL）。デフォルト値（例: 0）が常に入るため、NULL は不要。
 
 * **実行時の動作（時系列）**
+  子レコードが「未ロードか」「ロード済みか」によって動作が異なります。
+
+  **【ケースA：子がすべて未ロードの場合（正常系）】**
   ```text
-  session.delete(user)   ──①【メモリ】親に「削除予定」フラグ。ロード済みの子の user_id を None に設定
-        │                     ※ 未ロードの子は SELECT せず放置
-  session.flush()        ──②【SQL発行】ロード済みの子に UPDATE SET NULL → 親に DELETE を送信
-        │                     └─ UPDATE recipes SET user_id = NULL WHERE ...;
+  session.delete(user)   ──①【メモリ】親に「削除予定」フラグ（未ロードの子は SELECT せず放置）
+        │
+  session.flush()        ──②【SQL発行】親の DELETE だけを送信
         │                     └─ DELETE FROM users WHERE users.id = 1;
-    [PostgreSQL]         ──③【DB内部】ON DELETE SET DEFAULT が発動し、未ロードだった子の user_id を初期値に更新
+    [PostgreSQL]         ──③【DB内部】ON DELETE SET DEFAULT が発動し、子の user_id をデフォルト値に更新
         │
   session.commit()       ──④【確定・解放】DBコミット完了 ＆ 親をメモリから安全に破棄（子は残る）
   ```
-  > **⚠ 注意：ロード済み子と未ロード子で DB 上の値が異なる**
-  > ②でロード済みの子は SQLAlchemy により `user_id = NULL` に更新されるが、③で未ロードの子は DB により `user_id = デフォルト値` に更新される。結果として、同じテーブル内で FK の値が `NULL` と `デフォルト値` に分かれる不整合が生じる。SET DEFAULT を使う場合はこの点に注意が必要。
+
+  **【ケースB：ロード済みの子がいる場合（エラー）】**
+  ```text
+  session.delete(user)   ──①【メモリ】親に「削除予定」フラグ。ロード済みの子の user_id を None に設定（切り離し）
+        │
+  session.flush()        ──②【SQL発行】ロード済みの子を NULL にしようと UPDATE を送信
+        │                     └─ UPDATE recipes SET user_id = NULL WHERE ...;
+    [PostgreSQL]         ──③【DB内部】user_id は NOT NULL のため、NOT NULL 制約違反で拒絶！
+        │                     ※ 親の DELETE FROM users は送信すらされない
+      [Error]           ──④【安全停止】IntegrityError (NOT NULL constraint failed) でロールバック
+  ```
+  > **⚠ 注意：SET DEFAULT を安全に使うには、子を事前にロードしないこと**
+  > `passive_deletes=True` を設定しているので、意図的に `user.recipes` にアクセスしない限り子はロードされず、ケースA（正常系）が走る。ただし、うっかりロード済みの子がいるとケースB（NOT NULL 制約違反）で失敗するため注意が必要。
 
 ---
 
-### コラム：コミット時（④）の裏側で何が起きているのか？（expired と lazy refresh）
+### コラム：コミット時、裏側で何が起きているのか？（expired と lazy refresh）
 
-時系列フローのステップ ④（`session.commit()`）では、メモリ側で以下の重要な処理が自動的に行われています。
+`session.commit()`では、メモリ側で以下の重要な処理が自動的に行われています。
 
 1. **コミットした瞬間：Session 内の全キャッシュが「有効期限切れ（expired）」になる**
-   * コミットが成功すると、その Session が今まで保持していた**すべてのテーブルのオブジェクトに一括で「有効期限切れ」フラグ**が立ちます（SQLAlchemy の `expire_on_commit=True` という既定仕様）。
-   * DB 側で制約（`CASCADE` や `SET NULL` など）やトリガーが動いて実データが変更された可能性があるため、メモリ内の古いデータを一旦すべて「無効（賞味期限切れ）」とみなす安全設計です。
+   * コミットが成功すると、Identity Map にモデルオブジェクトへの参照を残したまま、そのオブジェクトの属性値（カラムデータ）が一括で消去されます。（SQLAlchemy の `expire_on_commit=True` という既定仕様の場合）。
+   * 自身のコミットに伴う DB
+  側の変更（制約・トリガー）に加え、次期トランザクションで他者による更新も正しく読み込むため、メモリ上の属性値を一旦消去する安全設計です。
 
 2. **再ダウンロードは「完全に lazy（遅延ロード）」で行われる**
    * コミットした瞬間に全データを一斉に DB から再取得（SELECT）するわけではありません。
@@ -260,12 +274,74 @@ RESTRICT | CASCADE | SET NULL | SET DEFAULT | NO ACTION
 | パターン | DB (`ondelete`) | カラム型 | `relationship()` 側の記述 | 発行されるSQL | DB側の連動処理 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **1. CASCADE** | `CASCADE` | `Mapped[int]` | `cascade="all, delete-orphan", passive_deletes=True` | ロード済み子の DELETE + 親の DELETE | 未ロード子を道連れ DELETE |
-| **2. RESTRICT** | `RESTRICT` | `Mapped[int]` | `passive_deletes=True` | ロード済み子の UPDATE SET NULL + 親の DELETE | 未ロード子が残っていれば拒絶 |
+| **2. RESTRICT** | `RESTRICT` | `Mapped[int]` | `passive_deletes=True` | 未ロード時: 親の DELETE<br>ロード済時: 子の UPDATE SET NULL | 未ロード時: 外部キー制約で拒絶<br>ロード済時: NOT NULL 制約違反で拒絶 |
 | **3. SET NULL** | `SET NULL` | `Mapped[int \| None]` | `passive_deletes=True` | ロード済み子の UPDATE SET NULL + 親の DELETE | 未ロード子の FK を NULL 更新 |
-| **4. SET DEFAULT**| `SET DEFAULT` | `Mapped[int]` | `passive_deletes=True` | ロード済み子の UPDATE SET NULL + 親の DELETE | 未ロード子の FK を初期値に更新 |
+| **4. SET DEFAULT**| `SET DEFAULT` | `Mapped[int]` | `passive_deletes=True` | 未ロード時: 親の DELETE<br>ロード済時: 子の UPDATE SET NULL | 未ロード時: SET DEFAULT で初期値に更新<br>ロード済時: NOT NULL 制約違反で拒絶 |
 
 > **補足：`passive_deletes="all"` について**
-> `passive_deletes="all"` にすると、ロード済みの子に対しても一切の cascade 処理をスキップし、親の DELETE 1本だけを発行する。しかし、Session 内のロード済み子オブジェクトに削除/更新フラグが立たないため、commit 後にそれらにアクセスすると `ObjectDeletedError` などの不整合が起きうる。Session の整合性を自動で保てる `passive_deletes=True` が推奨。
+> `passive_deletes="all"` にすると、ロード済みの子に対しても一切の cascade 処理をスキップし、親の DELETE 1本だけを発行する。しかし、Session 内のロード済み子オブジェクトに一切、削除/更新フラグが立たないため、commit 後にそれらにアクセスすると `ObjectDeletedError` などの不整合が起きうる（Cascadeで子をdeleteする場合）。Session の整合性を自動で保てる `passive_deletes=True` が推奨。
 
 ---
 
+### Cascade 項目別の挙動一覧表
+
+`relationship(cascade=...)` の各設定値と、何も書かなかった場合（デフォルト）の動作対応表です。
+
+| 項目名 | `cascade` に書いた時の動き | 何も書かないとき（デフォルトの動き） |
+| :--- | :--- | :--- |
+| **`save-update`** | **親の `add` 時に子にも保存予定フラグをつける**<br>👉 結果的に flush / commit 時に親子両方に INSERT / UPDATE の SQL が発行される | **デフォルトで有効（左と同じ）**<br>👉 書かなくても自動で子にも保存予定フラグがつき、SQL が発行される |
+| **`merge`** | 親を `merge` したら子も自動更新 | **自動で動く**（左と同じ） |
+| **`delete`** | **親の `delete` 時に子にも削除フラグをつける**<br>👉 結果的に flush / commit 時に親子両方に DELETE の SQL が発行される | **親に削除フラグ、子に親IDの NULL 更新フラグ（変更フラグ）がつく**<br>👉 結果的に flush / commit 時に整合性を保つため子の親IDを NULL 更新する UPDATE SQL が発行される |
+| **`expunge`** | 親をセッションから外したら子も外す | **動かない**<br>👉 親だけ外れ、子は残る |
+| **`refresh-expire`** | • 親を expire() した場合 ➔ 子も expire される<br>• 親を refresh() した場合 ➔ 親は最新化される(select発行)、子は expire される | **フラグは付かない**<br>👉 親だけ処理され、子のキャッシュは残る |
+| **`delete-orphan`** | **親のリストから外された子に削除フラグをつける**<br>👉 結果的に flush / commit 時にその子の DELETE の SQL が発行される | **削除フラグではなく親IDの NULL 更新フラグがつく**<br>👉 子は消さず、親IDを NULL 更新する UPDATE SQL が発行される |
+
+* 上から 5 つ（`save-update` 〜 `refresh-expire`）を一括有効化する指定が **`cascade="all"`**。
+* 一番下の **`delete-orphan`** は `all` に含まれないため、完全な従属関係（親子一蓮托生）にする場合は **`cascade="all, delete-orphan"`** と個別指定が必要。
+* 何も書かない場合（デフォルト）は **`save-update, merge`** のみ有効。`delete` が動かないため、親削除時に子には削除フラグではなく**親IDを NULL にする変更フラグ（UPDATE 待ち）が付き**、flush 時に子の外部キーを `NULL` にしようとする（これが NOT NULL 制約違反を引き起こす原因）。
+
+> **💡 `session.delete()` と `cascade="delete"` の仕組み（メモリ操作とSQL発行の2段階）**
+> * **① `session.delete(親)` 実行時（メモリ上の操作・SQLは飛ばない）**:
+>   * `cascade="delete"` が**ある**場合：親に「削除予定（deleted）」フラグが付くと連動して、**メモリ上の子オブジェクトにも「削除予定」フラグが付く**。
+>   * `cascade="delete"` が**ない**場合（デフォルト）：親に削除フラグが付き、子には削除フラグではなく**親IDを NULL にする変更フラグ（UPDATE 待ち）が付く**。
+> * **② その後の `session.flush()` / `commit()` 実行時（SQL発行）**:
+>   * `cascade="delete"` あり：子にも削除フラグがあるため、**親も子も `DELETE` クエリが送信される**。
+>   * `cascade="delete"` なし：子は消さずに親との関係だけ解除しようとして、**子の外部キーを `NULL` にする `UPDATE` クエリが送信される**（外部キーが NOT NULL の場合はここで拒絶されエラー）。
+
+---
+
+### `refresh-expire` の詳細まとめ
+
+#### 1. 結局何をするのか？
+**「親に対して `session.refresh()` または `session.expire()` を呼んだとき、リレーション先の子のメモリキャッシュも破棄（expire）する」** 設定。
+
+* **重要ポイント**:
+  * その場で子供の **SELECT（再取得）クエリが走るわけではない**。
+  * 子供の古いキャッシュを破棄して「期限切れ（expired）」マークをつけるだけ。
+  * 実際の子供のデータは、その後コード内で `item.name` などに**アクセスした瞬間に初めて、裏で遅延取得（Lazy Load）** される。
+
+#### 2. オンとオフの違い（同一トランザクション内）
+親（User）と、すでに読み込んである子（Item）がメモリ上にある状態で `session.refresh(user)` を呼んだ場合：
+
+* **オフ（デフォルト）**:
+  * 親: DBから最新化される
+  * 子: **何もしない（古いキャッシュがそのまま残る）**
+  * 👉 DB側で子供が書き換わっていても、手元の `item.name` は古いままになる。
+* **オン（`refresh-expire`）**:
+  * 親: DBから最新化される
+  * 子: **キャッシュが破棄（expire）される**
+  * 👉 その後 `item.name` に触った瞬間に、裏で最新データをDBから再読み込みしてくれる。
+
+#### 3. よくあるシチュエーションと疑問点
+* **`commit()` の直後に `session.refresh(user)` を呼ぶ場合は？**
+  * 👉 **オンでもオフでも挙動は全く同じ。**
+  * `commit()` した瞬間にそもそも子供も含め全オブジェクトが expire されるため、オン・オフの差は出ない。
+* **子供もその場で即座に一括 SELECT して最新化したい場合は？**
+  * 👉 `refresh-expire` では不可（キャッシュを捨てるだけのため）。
+  * その場で子供も一括再取得したい場合は、**`session.refresh(user, attribute_names=["items"])`** と明示的に指定する。
+
+#### 4. 設定の重要度
+* **結論：重要度は「極めて低い」。基本はデフォルト（オフ）のままでOK。**
+  1. そもそも手動で `expire()` を呼ぶ機会がほとんどない。
+  2. `refresh()` を呼ぶ場面の多くは「新規作成時や `commit()` の直後」だが、その状況ではオン・オフの差が出ない。
+  3. 「同一トランザクション内で親を refresh した際、メモリ上にある子のキャッシュも連鎖して破棄させたい」という極めて限定的なケース以外で影響しないため。

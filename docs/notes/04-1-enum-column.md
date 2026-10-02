@@ -124,15 +124,6 @@ SQLAlchemy の `String` カラムには型変換処理（バインドプロセ�
   3. SQLAlchemy の String(10) 型は、すでに str なので result processor も何もしない（実質 None / パススルー）。
   4. その結果、モデルの recipe.difficulty には 素の str オブジェクトが入る。
 
-| Python 側の定義 | `String(10)` に保存 | DBの値 |
-|---|---|---|
-| `class Difficulty(StrEnum)` | OK | `easy` |
-| `class Difficulty(str, Enum)` | OK | `easy` |
-| `class Difficulty(Enum)` | **失敗** | — |
-
-素の `Enum` は `str` ではないので、DBドライバが値を渡せず
-`ProgrammingError: type 'Difficulty' is not supported` になる。
-
 ### 特徴
 
 - 希望1（値で保存）は**これだけで達成できる**。
@@ -275,7 +266,6 @@ Enum の選択肢を増減させた場合、以下の運用上の注意点があ
 | 取り出した型 | `str` | `Difficulty` |
 | CHECK制約 | 自分で `__table_args__` に書く | `create_constraint=True` で自動 |
 | 書く量 | 少ない | 引数4つ＋制約名 |
-| 分かりやすさ | 「ただの文字列カラム」で読みやすい | 既定値を打ち消す意図を知らないと読めない |
 
 **希望1と2の両方を満たすのは案B。** 案Aは希望1だけ満たす。
 
