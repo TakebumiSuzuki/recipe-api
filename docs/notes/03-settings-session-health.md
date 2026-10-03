@@ -34,7 +34,7 @@ backend/
 [full-stack-fastapi-template](https://github.com/fastapi/full-stack-fastapi-template)（作者本人がメンテ）
 の両方が採る標準形。`app/core/` も公式テンプレートと同じ。
 
-公式テンプレートでのファイル名は `core/config.py` / `core/db.py` / `api/deps.py`。
+公式テンプレートでのファイル名は `app/core/config.py` / `app/core/db.py` / `app/api/deps.py`。
 今回はファイル名もこれに合わせて `core/db.py` / `deps.py` とした
 （公式内でもチュートリアルは `dependencies.py`、テンプレートは `api/deps.py` と揺れているので、
 呼び方自体は好みの範囲。ここではテンプレート側に寄せた）。

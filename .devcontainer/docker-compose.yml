@@ -32,7 +32,7 @@ services:
       # named volume なのでコンテナを rebuild しても履歴が消えない、というわずかな使い勝手のメリット。
       - claude-bashhistory:/commandhistory
 
-      # node:22-trixie にはデフォルトで bash が入っているが、zsh を使うためにわざわざこれを作る。
+      # node:24-trixie にはデフォルトで bash が入っているが、zsh を使うためにわざわざこれを作る。
       # zsh を使わないといけない理由は特にないが、このプロジェクトでは zsh を使うことにしている。
       # ホスト上の ./.zshrc を /home/node/.zshrc として見せる bind mount。
       # VS Code のターミナル(zsh)が起動時にこの $HOME/.zshrc を読み込む。

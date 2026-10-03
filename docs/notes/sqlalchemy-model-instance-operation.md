@@ -56,8 +56,9 @@ inspect(user2).attrs.age.history.has_changes()  # True （Noneが代入された
 ```python
 class User(Base):
     __tablename__ = "users"
-    id = Column(Integer, primary_key=True)
-    status = Column(String, server_default="active", nullable=True)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    status: Mapped[str | None] = mapped_column(server_default="active", nullable=True)
 ```
 
 #### A. カラムを渡さなかった場合 (`User()`)

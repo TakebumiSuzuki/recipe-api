@@ -338,10 +338,110 @@ RESTRICT | CASCADE | SET NULL | SET DEFAULT | NO ACTION
   * `commit()` した瞬間にそもそも子供も含め全オブジェクトが expire されるため、オン・オフの差は出ない。
 * **子供もその場で即座に一括 SELECT して最新化したい場合は？**
   * 👉 `refresh-expire` では不可（キャッシュを捨てるだけのため）。
-  * その場で子供も一括再取得したい場合は、**`session.refresh(user, attribute_names=["items"])`** と明示的に指定する。
+  * ~~`session.refresh(user, attribute_names=["items"])` と明示的に指定する。~~ ← **訂正（実機で確認）**
+    * これで最新化されるのは **子のリストの顔ぶれ（DB 側での追加・削除）だけ**。
+    * **既にメモリにある子の値（`item.name` など）は古いまま**。子オブジェクト自身は expire されないため、SELECT で返ってきた値は Identity Map に捨てられる。
+  * 子の値まで確実に最新化したい場合は、**`populate_existing=True` で取り直す**（次の「7. 方針」を参照）。
 
 #### 4. 設定の重要度
 * **結論：重要度は「極めて低い」。基本はデフォルト（オフ）のままでOK。**
   1. そもそも手動で `expire()` を呼ぶ機会がほとんどない。
   2. `refresh()` を呼ぶ場面の多くは「新規作成時や `commit()` の直後」だが、その状況ではオン・オフの差が出ない。
   3. 「同一トランザクション内で親を refresh した際、メモリ上にある子のキャッシュも連鎖して破棄させたい」という極めて限定的なケース以外で影響しないため。
+
+---
+
+## 7. 方針：expire / refresh の連動は「populate_existing で取り直す」
+
+`refresh()` と `refresh-expire` の組み合わせは挙動が分かりにくいため（下表）、**リレーションがある場合は cascade に頼らず、クエリで明示的に取り直す**。
+
+### `session.refresh(user)` の挙動まとめ（実機確認：SQLAlchemy 2.1.3）
+
+| | 親のカラム | 親のリレーション属性 | 子オブジェクト自身 | 後で `user.items` を参照したとき |
+| :--- | :--- | :--- | :--- | :--- |
+| `attribute_names` なし × オフ（既定） | 全て最新化 | expire される | 何もしない | SQL は飛ぶが **子の値は古いまま** |
+| `attribute_names` なし × オン | 全て最新化 | expire される | **expire される** | SQL が飛び **最新値になる** |
+| `attribute_names=["name"]` × オン/オフ | 指定列のみ最新化 | 何もしない | 何もしない | SQL は飛ばず、メモリの値のまま |
+| `attribute_names=["items"]` × オン/オフ | 何もしない | 即座に再取得 | 何もしない | リストの顔ぶれは最新、**既存の子の値は古いまま** |
+
+* `attribute_names` を渡すと、**`refresh-expire` の設定は無視される**（内部で cascade 処理を通らないため）。
+* 「SQL が飛んだのに古いまま」になるのは、**expire されていないオブジェクトは、DB から返ってきた行で上書きしない**という Identity Map の仕様のため。
+
+### 推奨：`select` ＋ `selectinload` ＋ `populate_existing=True`
+
+```python
+stmt = (
+    select(User)
+    .where(User.id == user_id)
+    .options(selectinload(User.items))
+    .execution_options(populate_existing=True)  # メモリ上の値を DB の値で上書き
+)
+user = session.scalars(stmt).one()
+# session.get(User, user_id, populate_existing=True) でも可（リレーションは含まない）
+```
+
+* 親も、`selectinload` で取った子も、まとめて DB の値で上書きされる（cascade 設定は不要）。
+* **注意1：結果を読み出さないと上書きされない。** `session.execute(stmt)` だけでは古いまま。`.scalar_one()` / `.all()` / `for` などで行を読み出した時点で上書きされる。
+* **注意2：未 flush のローカル変更は残る。** `refresh()` はローカル変更を捨てて DB の値に戻すが、`populate_existing` は変更済みの属性を上書きしない。
+* **そもそも必要な場面は少ない。** `commit()` 後は全オブジェクトが expire されるので、普通に再取得すれば最新値になる。`populate_existing` が必要なのは「同じトランザクション内で、DB 側が別経路（生 SQL、トリガー、他接続など）で変わった」場合。
+
+### `refresh()` を使ってよい場面
+
+* ローカルの変更を捨てて DB の値に戻したいとき
+* 1つのオブジェクトの **自分のカラムだけ** を取り直したいとき（例：flush/commit 後に DB 側で生成された `server_default` の値を読む）
+
+---
+
+## 8. 非同期（AsyncSession）で commit 後にモデルを返すときの注意
+
+### 何が起きるか
+
+既定の `expire_on_commit=True` では、`commit()` で全属性が expire される。
+非同期では、**expire された属性に同期コード（FastAPI / Pydantic の JSON 構築など）からアクセスすると、裏で遅延ロードの SELECT を走らせようとして失敗する**。
+
+```python
+async def create_user(session: AsyncSession, data) -> User:
+    user = User(**data)
+    session.add(user)
+    await session.commit()
+    return user   # ← この user は expire 済み
+
+# その後、レスポンス構築で user.name にアクセス
+# → セッションがまだ開いている：MissingGreenlet（StatementError に包まれて出る）
+# → セッションが閉じた後　　　：DetachedInstanceError
+```
+
+`commit()` の直後に `user.id` を読むだけでも同じエラーになる（`id` も expire されているため）。
+
+### 実機での検証結果（SQLAlchemy 2.1.3 + aiosqlite）
+
+`commit()` 後に、同期コードで親のカラムと子リレーション `posts` を読んだ結果。
+
+| commit 後の処理 | カラムのみ | `posts` も含める |
+| :--- | :--- | :--- |
+| 何もしない（既定） | ✗ | ✗ |
+| `await session.refresh(user)` | ✓ | ✗（リレーションはロードされない） |
+| `await session.refresh(user, attribute_names=["posts"])` | ✗（カラムは expire のまま） | ✗ |
+| 上の2つを両方呼ぶ | ✓ | ✓ |
+| `select` ＋ `selectinload(User.posts)` で取り直す | ✓ | ✓ |
+| `expire_on_commit=False` | ✓ | △（メモリ上にある分は ✓、未ロードのリレーションは ✗） |
+
+### 対処法
+
+1. **リレーションも返す場合：`select` ＋ `selectinload` で取り直す（推奨）**
+   ```python
+   await session.commit()
+   stmt = select(User).where(User.id == user_id).options(selectinload(User.posts))
+   return (await session.scalars(stmt)).one()
+   ```
+   `commit()` 後は全て expire されているので、`populate_existing` を付けなくても最新値が入る。
+   ※ `user_id` は commit **前**に変数に取っておく（commit 後に `user.id` を読むとそれ自体がエラーになる）。
+
+2. **カラムだけ返す場合：`await session.refresh(user)`**
+   リレーションが必要なら `attribute_names` でリレーション名を指定する。ただし `attribute_names` を指定すると**指定したものしか読み込まれない**ので、カラムも必要なら `refresh()` を2回呼ぶか、1 の方法にする。
+
+3. **`async_sessionmaker(engine, expire_on_commit=False)`**
+   非同期では公式ドキュメントでも推奨されている設定。commit 後もメモリ上の値がそのまま使える。
+   ただし、
+   * **未ロードのリレーションには使えない**（アクセスすると MissingGreenlet）。`selectinload` で事前にロードしておく必要がある。
+   * DB 側で生成・変更された値（`server_default`、トリガーなど）は**自動では反映されない**。必要なら `refresh()` する。

@@ -70,7 +70,9 @@ SQL の仕様上、**`DEFAULT`（server_default）が発動するのは「INSERT
 ### ③ アプリ側で日時を指定して送る：【指定値が保存される】
 
 ```python
-custom_time = datetime(2025, 1, 1, 12, 0, tzinfo=timezone.utc)
+from datetime import UTC, datetime
+
+custom_time = datetime(2025, 1, 1, 12, 0, tzinfo=UTC)
 recipe = Recipe(title="オムライス", created_at=custom_time)
 ```
 
@@ -113,14 +115,16 @@ SQLAlchemy 2.0 では、型ヒントに `| None`（Optional）を付けると、
 
 #### パターン A: Python 側で UTC の aware 日時を渡す（推奨・FastAPI で扱いやすい）
 ```python
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 # エンドポイントや CRUD 関数の中
-recipe.published_at = datetime.now(timezone.utc)
+recipe.published_at = datetime.now(UTC)
 session.commit()
 return recipe
 ```
-- **特徴**: Python のメモリ上にすでに `datetime` オブジェクトが入っているため、`session.refresh(recipe)` を呼ばなくても FastAPI のレスポンス（Pydantic）にそのまま渡せます。
+- **挙動と注意点（expire の罠）**:
+  - **デフォルト設定（`expire_on_commit=True`）の場合**: `session.commit()` 時に全属性が expire（破棄）されます。そのため `return recipe` で Pydantic に渡すと、レスポンス構築時に `recipe.published_at` を読もうとした瞬間に、裏で**暗黙の再クエリ（SELECT 文）**が走って DB から値を再取得します（※非同期セッション `AsyncSession` の場合は `MissingGreenlet` などのエラー原因になります）。
+  - **`expire_on_commit=False` を設定している場合**: Python のメモリ上に代入した `datetime` オブジェクトがそのまま保持されるため、余計な再クエリや `session.refresh(recipe)` なしで安全に Pydantic に渡せます。
 - **前提**: アプリサーバーの時計が NTP 等で正確に同期されていること。
 
 #### パターン B: DB サーバー側の SQL 関数 `func.now()` を渡す
@@ -185,7 +189,7 @@ Python の日時オブジェクトには 2 つの状態があります。
    - `datetime.now()` や `time(12, 0)` など、引数を指定せずに生成したもの。
    - どこの地域の時間なのかという情報を持っていません。
 2. **aware（タイムゾーンあり）**: `tzinfo` にタイムゾーン情報が設定されている
-   - `datetime.now(timezone.utc)` や `time(12, 0, tzinfo=timezone.utc)` など、**明示的に指定して初めて aware になります**。
+   - `datetime.now(UTC)` や `time(12, 0, tzinfo=UTC)` など、**明示的に指定して初めて aware になります**。
 
 ※ なお、**`date` 型（年月日）にはそもそもタイムゾーンという属性・概念が存在しません**。
 
@@ -227,7 +231,7 @@ Python の日時オブジェクトには 2 つの状態があります。
 Step 4-0 で学んだ通り、`DateTime` 型は SQLAlchemy の `bind_processor` を持たず、**素通り** します。
 そして、ドライバ（psycopg）は **渡された Python オブジェクトの実際の状態だけを見て** バイト列に変換します。
 
-#### パターン A: Python 側が aware (`tzinfo=timezone.utc`) の場合【安全】
+#### パターン A: Python 側が aware (`tzinfo=UTC`) の場合【安全】
 1. psycopg はオフセット情報（`+00:00`）を付与して PostgreSQL に送信します。
 2. PostgreSQL は指定されたタイムゾーンを正しく認識し、UTC として内部保存します。
 
@@ -238,14 +242,14 @@ Step 4-0 で学んだ通り、`DateTime` 型は SQLAlchemy の `bind_processor` 
 
 > **核心**:
 > `DateTime(timezone=True)` という指定は、**DB カラムを `TIMESTAMPTZ` にすること** と、**DB から読み出す（SELECT）ときに psycopg に aware datetime として復元させること** を保証するものであり、**「アプリ側から渡す naive な日時に勝手にタイムゾーンを付加してくれる魔法」ではありません**。
-> アプリ側で日時を生成して渡す際は、**必ず aware datetime（`datetime.now(timezone.utc)`）を渡す** 必要があります。
+> アプリ側で日時を生成して渡す際は、**必ず aware datetime（`datetime.now(UTC)`）を渡す** 必要があります。
 
 ---
 
 ## 5. 補足：Python の `time` 型と DB の `TIMETZ`
 
 Q.「Python の `time` 型にタイムゾーンの概念はあるのか？」
-A. **あります。** `time(15, 30, tzinfo=timezone.utc)` のように指定できます。
+A. **あります。** `time(15, 30, tzinfo=UTC)` のように指定できます。
 
 しかし、**実務のデータベース設計において、時刻だけのタイムゾーン付き型（PostgreSQL の `TIMETZ`）は原則として使いません**。
 
@@ -295,7 +299,7 @@ class Recipe(Base):
 ### 心に留めておくべき 4 大原則
 1. **`server_default` はカラムが省略された時だけ動く**。`None` を渡すと明示的 NULL 扱いとなり NOT NULL 制約違反で落ちる。
 2. **日付単体（`Date`）を UTC で扱うと日付ズレが起きる**。瞬間を記録するなら `DateTime(timezone=True)` にして表示側で現地時間に直す。
-3. **Python で日時を作る時は常に aware（`timezone.utc`）にする**。SQLAlchemy / psycopg は naive datetime にタイムゾーンを勝手に補完してはくれない。
+3. **Python で日時を作る時は常に aware（`UTC`）にする**。SQLAlchemy / psycopg は naive datetime にタイムゾーンを勝手に補完してはくれない。
 4. **`onupdate` は DB 制約ではなく SQLAlchemy の自動 SET 注入**。PostgreSQL で自前トリガーを用意しない限り、`server_onupdate` ではなく `onupdate=func.now()` を使う。
 
 ---

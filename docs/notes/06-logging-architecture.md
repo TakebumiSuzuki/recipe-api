@@ -76,9 +76,13 @@ Uvicorn は単なる部品ライブラリではなく、「コマンドライン
     },
 }
 ```
+つまり、Uvicorn は単体 CLIとしても動くため初期状態で独自ハンドラを抱えて勝手にログを出力する仕様になっており、さらに propagate: False のため親（ルートロガー）の設定も伝播しません。そのため、ロガーが名前ごとのシングルトンであることを利用し、dictConfig で uvicorn とuvicorn.access を名指しして共通ハンドラで直接上書き（エディット）することで、ログフォーマットを統一しています
+
 ---
 
 ## 4. SQLAlchemy の SQL ログと `echo=True` の罠
+
+ SQLAlchemy は SQL実行ごとに内部ロガー（sqlalchemy.engine.Engine）へ常にログを送信しているが、デフォルト（echo=False）では出力用ハンドラを持たず画面には表示されない。また、propagate: True となっている。
 
 ### (1) SQLAlchemy 内部のロギング仕様
 SQLAlchemy は、接続（psycopg等）を介して SQL を実行する際、**常に無条件で内部ロガー `sqlalchemy.engine.Engine` に対して `INFO` レベルで SQL 文を送信** している。
@@ -113,4 +117,9 @@ SQLAlchemy は、接続（psycopg等）を介して SQL を実行する際、**�
     "propagate": False,
 },
 ```
+
+`sqlalchemy.engine.Engine` ではなく親の `sqlalchemy.engine` を指定しているのは、SQL 文を出力する `Engine` だけでなく、トランザクション制御などを担う `Connection` も含めた「エンジン層全体」のログをまとめて一括でコントロールできるようにするためです（将来的に複数の DB エンジンを併用した場合でも漏れなくカバーできます）。
+
+なお、これ以外の場所から出る SQLAlchemy のログ（コネクションプールや ORM など）はあえて個別に設定せず、アプリ最上位のルートロガー（`""`）で捕捉し、WARNING 以上の重大な警告やエラーのみを確実に拾い上げる設計にしています。
+
 
