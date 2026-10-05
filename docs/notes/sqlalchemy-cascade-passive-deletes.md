@@ -4,10 +4,7 @@
 
 ---
 
-## 1. ondelete="CASCADE" の場合
-
-親を削除すると、**DB が子レコードも自動削除**する設定。
-SQLAlchemy 側は `cascade="all"`（delete を含む）を設定する。
+## 1. ondelete="CASCADE" の場合 (`cascade="all"`（delete を含む）設定)
 
 ### passive_deletes=False（デフォルト）
 
@@ -62,10 +59,8 @@ delete cascade とは併用できない（→ 2. SET NULL の項を参照）。
 
 ---
 
-## 2. ondelete="SET NULL" の場合
+## 2. ondelete="SET NULL" の場合 (cascade はデフォルト（"save-update, merge"）のまま)
 
-親を削除すると、**DB が子の FK を NULL に設定**する設定。
-SQLAlchemy 側は cascade をデフォルト（`"save-update, merge"`）のままにする。
 "delete" を含めない → 子は削除されず、FK が NULL にされる。
 
 > delete cascade が無い場合、子の FK を NULL にする処理は `session.delete()` 時点ではなく
@@ -100,6 +95,13 @@ session.commit()  # flush
 # 4. DELETE parent
 # 5. DB の ON DELETE SET NULL が未ロードだった子に対して発動
 # 6. COMMIT
+# ⚠ parent.children に一度もアクセスしていないのに、子だけを直接取得していた場合
+#    （session.get(Child, 1) や Child を直接クエリした等）は要注意。
+#    SQLAlchemy が parent_id = None にするのは「parent.children 経由で読み込んだ子」だけなので、
+#    直接取得した子は Session 内の parent_id が古い値のまま、DB の ON DELETE SET NULL で行だけ NULL になる
+#    → expire_on_commit=True（デフォルト）: commit 時に expire され、再アクセス時に再ロードされて None になる（問題なし）
+#    → expire_on_commit=False: 古い parent_id（削除済みの親の ID）を返し続ける（DB とズレる）
+#    （parent.children にアクセス済みなら、Session 自身が UPDATE するので問題なし）
 ```
 
 ### passive_deletes="all"
@@ -115,10 +117,11 @@ session.commit()  # flush
 # 5. DB の ON DELETE SET NULL が全子に対して発動
 # 6. COMMIT
 # ⚠ flush 後〜commit 前は、Session 内の子の parent_id は古い値のまま（DB とズレる）
+#    （parent.children 経由か直接取得かを問わず、全ての子が対象）
 #    commit 時の expire（expire_on_commit=True）で再ロードされれば None になるが、
 #    expire_on_commit=False だと古い値が残り続ける
-# ⚠ DB 側に ondelete が無い（または RESTRICT）と、子が FK で親を参照したまま
-#    DELETE parent が走るので IntegrityError になる
+# ⚠ DB 側に ondelete が無い（つまりデフォルトの NO ACTION）または RESTRICT の場合、
+#    子が FK で親を参照したまま　DELETE parent が走るので IntegrityError になる
 #    → 「DB トリガーで処理する」「DB にエラーを出させたい」用途向け
 # ※ 子を parent.children から明示的に外した（parent.children.remove(child)）場合は、
 #    "all" でも通常どおり parent_id = None にされる

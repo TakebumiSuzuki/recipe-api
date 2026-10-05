@@ -12,18 +12,22 @@ from app.core.config import get_settings
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
-# この時点で ini ファイルはパースされ context.config に読み込まれている。しかし、
-# ini ファイルには logging 関連の項目しか書かれておらず、結果的にこれらは使われない。
+# config の実体は Alembic 独自の Config オブジェクトで、内部的には ini ファイルを
+# パースした結果（セクションやキーバリュー）を辞書のように保持・管理している入れ物。
+# Alembicが起動すると ini ファイルはパースされ、ここに読み込まれている。
+# ini ファイルには loggin設定のみが書かれていて、以下の行でロガーの初期化に利用される。
 config = context.config
 
 # main とは、alembic.ini における [alembic] セクション のこと。
-# 本プロジェクトでは ini の中にデフォルトで記述されていた [alembic] 項目を削除済み。
-# ここで注入する。これにより git の追跡を逃れ、環境変数から動的に注入できる。
+# 本プロジェクトでは ini の中にデフォルトで記述されていた [alembic] 項目を削除したので
+# ここで注入する。つまり、環境変数から動的に注入している (git の追跡を逃れるため。)
 config.set_main_option("sqlalchemy.url", get_settings().database_uri)
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
-# ここで、ini ファイルを logging に直接読み込ませている
+# ini ファイルが見つかり、読み込まれている場合に、
+# Python 標準の logging.config.fileConfig 関数が、alembic.iniからログ設定部分
+# だけを読み込んで適用しています。(ini ファイルを pythonの logging にも使わせている)
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
@@ -65,6 +69,7 @@ def run_migrations_online() -> None:
 
     """
     # connectable とは engine オブジェクトのこと
+    # engine_from_config は SQLAlchemy からの関数。中身は create_engine() と同じ
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
         # 辞書の中から「どの文字で始まるキーを拾うか」の指定

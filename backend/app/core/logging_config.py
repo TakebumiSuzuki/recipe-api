@@ -1,8 +1,9 @@
 # このアプリは、backend/で fastapi dev することを前提としている。fastapi dev コマンドはこの階層を基準に、
 # 決められた順序(main.py → app.py → app/main.py などの候補リスト順)で階層をたどり、app/main.py を見つける。
-# また、この階層から __init__.py の有無を親にのぼりながら検証することにより、結果的に backend/ が
-# fastapi dev コマンド によって sys.path に登録される。また、Uvicorn に渡す文字列（app.main:appなど）を完成させる。
-# app/ は一つのパッケージとして認識され、それに含まれる各モジュールの __name__ は app. からの文字列になる。
+# その後、この階層から __init__.py の有無を親にのぼりながら検証することにより、結果的に backend/ がアプリの
+# ルートディレクトリだと決定され、sys.path に登録される。
+# (また、同時に、Uvicorn に渡す文字列（app.main:appなど）を完成させる。)
+# 以上により、app/ は一つのパッケージとして認識され、そこに含まれる各モジュールの __name__ は app. からの文字列になる。
 # そして、各モジュールで getLogger(__name__) と書く慣例により、logging の階層がモジュール階層と一致する。
 import logging.config
 from pathlib import Path
@@ -60,7 +61,7 @@ def setup_logging():
         # 以下は、「どんなログが来たら、どこへ、どういうフォーマットで書き込むか」という中央管理局・パイプラインを作っている
         "loggers": {
             # ルートロガー: アプリで使われている全てのロガーに対し、どのレベル以上のログが受付け可能か、というグローバルな設定
-            # 実質的に、全てのライブラリ内に設定されている、全てのロガーのログ受付レベルを'INFO'にしている。
+            # 実質的に、全てのライブラリ内に設定されている、全てのロガーのログ受付レベルを'WARNING'にしている。
             "": {
                 "level": "WARNING",
                 "handlers": ["console", "file"],
@@ -73,9 +74,9 @@ def setup_logging():
                 "level": "DEBUG",
             },
             # 環境変数 SQL_ECHO に応じて SQL ログの出力レベルを切り替える
-            # - DEBUG  : SQL文とパラメータに加え、取得結果（全行データ）まで詳細に出力
-            # - INFO   : 発行されたSQL文とパラメータを出力（SQL_ECHO=True のとき）
-            # - WARNING: 通常のSQL文は出力せず警告・エラーのみ（SQL_ECHO=False のとき）
+            # - DEBUG  : SQL文とパラメータに加え、取得結果（全行データ）まで詳細に出力 -> 必要ない
+            # - INFO   : 発行されたSQL文とパラメータを出力
+            # - WARNING: 通常のSQL文は出力せず警告・エラーのみ
             "sqlalchemy.engine": {
                 "level": "INFO" if get_settings().sql_echo else "WARNING",
                 "handlers": ["console"],
@@ -103,6 +104,10 @@ def setup_logging():
     # このモジュールの __name__ の値は、 "app.core.logging_config" になる。
     # よって、以下のコードで、同名のloggerがインスタンス化される
     logger = logging.getLogger(__name__)
+    # この後、以下のように設定を追加することは可能。その必要はないが一応。。
+    # logger.setLevel(logging.INFO)  # レベルを設定
+    # logger.addHandler(my_custom_handler)  # ハンドラを追加
+    # logger.propagate = False  # 伝播をオフにする
     logger.info(f"Logging configuration completed. Module __name__: {__name__}")
 
 
@@ -120,6 +125,6 @@ sys.path には、通常、以下の優先順位（先頭から探索される�
 """
 1. 大前提として、logging.getLogger() の引数には好きな文字列を渡せる。
 2. ただし、ロギングシステムは、この文字列内のドットを手がかりにして自動的に親子関係（階層ツリー）を構築するという仕組みを持っている。つまり、ドット（.）で階層を作る。
-3. よって、通常は __name__ をこの文字列に流用する:
+3. よって、通常は __name__ をこの文字列に"流用"する:
 モジュールの __name__ がまさに「ドット区切りの文字列（例: src.config)」であるため、これを渡すだけで名前決めの手間なく、ディレクトリ構造と一致したロガーの階層ツリーを簡単に自動生成できる。
 """
