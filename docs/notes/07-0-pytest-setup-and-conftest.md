@@ -107,7 +107,7 @@ app.dependency_overrides[get_db_session] = lambda: db_session
 1. **`conftest.py` は DB そのものは作らない**
    `create_engine(url=...)` は既存の DB への接続設定を行っているだけで、PostgreSQL サーバー内にデータベース自体を作成するわけではない。
 2. **Docker Compose の初期化仕様**
-   PostgreSQL 公式イメージは、初回起動時に環境変数 `POSTGRES_DB` で指定されたデータベース（本環境では `mydb`）を 1 つだけ自動作成する。そのため、`test_db` は自動では作成されず、存在しない状態で接続すると `database "test_db" does not exist` エラーになる。
+   PostgreSQL 公式イメージは初回起動時に `POSTGRES_DB` で指定されたデータベース（本環境では `mydb`）を 1 つだけ自動作成する。`POSTGRES_DB=mydb,test_db` のような複数指定には対応していないため、2つ目以降の DB は SQL やスクリプト等で作成する必要がある。そのため、`test_db` は自動では作成されず、存在しない状態で接続すると `database "test_db" does not exist` エラーになる。
 
 ---
 
@@ -159,6 +159,7 @@ PostgreSQL 公式イメージの「`/docker-entrypoint-initdb.d/` 配下のス�
 ### (1) 各コンポーネントのライフサイクルと対応関係
 
 テスト環境における各オブジェクトの生存期間（ライフサイクル）は、以下のように整理される。
+`test_client` は、Cookie、ヘッダー、依存性のオーバーライドをテストごとに真っさらに保つため、 `function`(デフォルト) にする。
 
 | コンポーネント | ライフサイクル | 説明 |
 | :--- | :--- | :--- |
@@ -221,7 +222,7 @@ def test_user(engine):  # 引数で指定して初めて engine が動く
   - **セッション開始時（最初のテストの前）**：どのテストも fixture を要求していなくても、**無条件で自動実行**され、`yield` まで進む。
   - **全テスト終了後**：自動で `yield` の後ろ（クリーンアップ）が実行される。
 
-テーブルの作成・破棄のように、「テスト関数側でそのオブジェクトを受け取る必要はないが、テストの前提条件として確実に実行しておきたい処理」に最適。
+テーブルの作成・破棄のように、「テスト関数側でそのオブジェクトを受け取る必要はないが、テストの前提条件として確実に実行しておきたい処理」に最適。しかし、フィクスチャーが返した値を使いたい場合は、autouse=True の有無にかかわらず引数に書く必要があります。つまり、`autouse=True` の本質的な目的は、「テスト側に変数として渡す必要はないが、テスト環境の前提条件として絶対に実行されていてほしい`副作用（SideEffect）`」の保証です。
 
 #### 依存関係の連鎖解決（実例）
 ```python
@@ -331,8 +332,9 @@ fixture: db_session (setup)
        │
 [テスト実行中]
 テスト関数 / FastAPI エンドポイント
-  ├── db.execute(...) / db.add(...)        ──> DB: SAVEPOINT sa_savepoint_1;
-  │                                        ──> DB: INSERT INTO ...;
+  ├── db.add(...)                          ──> (メモリ上の Pending 登録のみ、DB通信なし)
+  ├── db.flush() / db.execute(...)         ──> DB: SAVEPOINT sa_savepoint_1; (初回DB通信直前に自動発行)
+  │                                        ──> DB: INSERT INTO ...; / SELECT ...;
   └── db.commit()                          ──> DB: RELEASE SAVEPOINT sa_savepoint_1;
        │                                       (※本物の COMMIT は送らない！親 BEGIN は継続)
        │
@@ -352,10 +354,13 @@ fixture: db_session (teardown)
 
 #### ② テスト実行中（エンドポイント内の処理）
 SQL の仕様には「トランザクションの入れ子（BEGIN の中に BEGIN）」は存在しないため、DB 上は親トランザクション（BEGIN）が開いたまま処理が進む。
-1. **エンドポイントで最初の DB 操作（`execute` や `add`）が走った瞬間**:
-   - セーブポイントモードにより、DB に **`SAVEPOINT sa_savepoint_1;`**（しおり）が打たれ、その後に `INSERT` 等のクエリが実行される。
-2. **エンドポイントで `db.commit()` が呼ばれた瞬間**:
-   - SQLAlchemy が本物の `COMMIT` を横取りし、DB には **`RELEASE SAVEPOINT sa_savepoint_1;`**（しおりの解放・破棄）のみを送る。
+1. **オブジェクトの登録時（`db.add(...)` 等）**:
+   - Python のメモリ内（Unit of Work）でオブジェクトを「保留中（Pending）」として登録するだけであり、**この時点では DB 通信は一切発生しない**（SAVEPOINT も発行されない）。
+2. **最初の DB 通信が走る瞬間（`db.flush()` や `db.execute(...)` の実行時）**:
+   - SQLAlchemy の遅延開始（Lazy）により、クエリ送信の直前に自動で **`SAVEPOINT sa_savepoint_1;`**（しおり）が打たれる。
+   - その直後に、`INSERT` や `SELECT` 等の実際のクエリが実行される。
+3. **エンドポイントで `db.commit()` が呼ばれた瞬間**:
+   - （未 flush の変更があれば自動 flush された後）SQLAlchemy が本物の `COMMIT` を横取りし、DB には **`RELEASE SAVEPOINT sa_savepoint_1;`**（しおりの解放・破棄）のみを送る。
    - **本物の `COMMIT` は絶対に送られないため、外側の親トランザクションは開いたまま**。しかし、アプリ側には「コミットが正常終了した」ように見せかける（擬似的なコミット完了）。
 
 #### ③ テスト終了後（fixture: db_session の後半）

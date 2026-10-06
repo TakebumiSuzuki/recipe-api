@@ -89,12 +89,12 @@ PostgreSQL 内部において、セーブポイントは **サブトランザク
 * **課題**: テストごとにデータをきれいに消したいが、毎回テーブルを削除・再作成（DROP/CREATE）したり DELETE 文を投げるのは遅すぎる。
 * **解決策の仕組み**:
   1. **親トランザクションの開始**: テスト開始時に、テスト全体を包む外側の親トランザクションを開始する（`connection.begin()`）。
-  2. **最初の DB 操作時に自動で SAVEPOINT を作成**: SQLAlchemy のセッション（`join_transaction_mode="create_savepoint"`）は、最初の DB 操作（SELECT/INSERT 等）が行われた瞬間に、自動で `SAVEPOINT` を発行して防壁を張る。
+  2. **最初の DB 通信時に自動で SAVEPOINT を作成**: SQLAlchemy のセッション（`join_transaction_mode="create_savepoint"`）は、最初の DB 通信（SELECT や flush による INSERT 等）が行われる直前に、自動で `SAVEPOINT` を発行して防壁を張る（※`session.add()` はメモリ登録のみで DB 通信はまだ発生しない）。
   3. **`Session.commit()` の二重実装によるコミット回避**:
      * この SQLAlchemy の Session に実装されているメソッドは内部状態に応じた**二重実装**（通常時は本物の `COMMIT` を発行、セーブポイント管理下では `RELEASE SAVEPOINT` を発行）になっている。
      * そのため、 `RELEASE SAVEPOINT` が発行されて DB 側の本コミットが回避される（アプリ側には正常にコミットが完了したように見せかける）。
   4. **解放後に即座に次のセーブポイントを再作成**:
-     * `RELEASE SAVEPOINT` によって直前のセーブポイントが消費された後、続く次の DB 操作時に SQLAlchemy が**即座に新しい `SAVEPOINT` を自動で再作成**する。
+     * `RELEASE SAVEPOINT` によって直前のセーブポイントが消費された後、続く次の DB 通信時に SQLAlchemy が**即座に新しい `SAVEPOINT` を自動で再作成**する。
      * これにより、アプリ内で複数回 `commit()` が呼ばれても、本物の `COMMIT` が DB に到達する隙を作らない。
   5. **テスト終了時の一撃ロールバック**:
      * テスト関数が終わった瞬間に、最初に開いた親トランザクションを **`ROLLBACK`** する。
@@ -187,9 +187,9 @@ session = Session(
 
 * **v2 で何が変わったのか？**:
   イベントリスナーを手動で書く必要は完全に撤廃されました。SQLAlchemy の `Session` 自身が「外側で既にトランザクションが開いていること」を検知し、**以下のサイクルを完全自動で代行** してくれます：
-  1. 最初の DB 操作時に、自動で **`SAVEPOINT`** を発行する。
-  2. アプリが `session.commit()` を呼んだら、自動で **`RELEASE SAVEPOINT`** を発行する。
-  3. 次にアプリが DB 操作を行ったら、自動で **新しい `SAVEPOINT`** を再発行する。
+  1. 最初の DB 通信時（flush や execute の直前）に、自動で **`SAVEPOINT`** を発行する。
+  2. アプリが `session.commit()` を呼んだら、未 flush の変更を送信した上で自動で **`RELEASE SAVEPOINT`** を発行する。
+  3. 次にアプリが DB 通信を行ったら、自動で **新しい `SAVEPOINT`** を再発行する。
 
 ---
 
@@ -207,13 +207,15 @@ pytest の `db_session` フィクスチャ（`scope="function"`）により、�
   │
   │  ─── ここから FastAPI / アプリコードの処理 ───
   │
-  ├─ session.add(user) / execute(...)  ← ② 初回操作時に SQLAlchemy が自動で SAVEPOINT sa_1 を発行
+  ├─ session.add(user)                 ← (メモリ上の保留リストに追加。DB通信・SAVEPOINTなし)
+  ├─ session.flush() / execute(...)    ← ② 初回DB通信直前に SQLAlchemy が自動で SAVEPOINT sa_1 を発行
+  │                                       その直後に INSERT / SELECT クエリを実行
   │
   ├─ session.commit()                  ← ③ アプリはコミットしたつもりだが、
   │                                       Session.commit() の二重実装により「RELEASE SAVEPOINT sa_1」が発行される！
   │                                       （本物の COMMIT ではないため、外側の親 Tx は開いたまま維持）
   │
-  ├─ 次の DB 操作                       ← ④ セーブポイント解放を受け、SQLAlchemy が自動で次の防壁「SAVEPOINT sa_2」を即座に再発行
+  ├─ 次の DB 通信                       ← ④ セーブポイント解放を受け、SQLAlchemy が自動で次の防壁「SAVEPOINT sa_2」を即座に再発行
   │
   │  ─── テスト終了 (fixture teardown: backend/tests/conftest.py) ───
   │

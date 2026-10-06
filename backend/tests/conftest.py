@@ -41,7 +41,8 @@ def db_session(engine: Engine) -> Generator[Session]:
 
     session.close()
     transaction.rollback()
-    # プールに接続を返却する
+    # プールに接続を返却する。「切断」ではなく「プールへの返却」
+    # 物理的な接続は _engine（のプール）がそのままキープしています。
     connection.close()
 
 
