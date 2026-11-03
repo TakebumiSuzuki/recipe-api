@@ -31,9 +31,16 @@ def db_session(engine: Engine) -> Generator[Session]:
     # 接続を毎回行うのではなく、プールから空いている接続を1本借りてくる
     # Base.metadata.create_all(bind=engine) で作られたコネクションを借りるということ。
     connection = engine.connect()
+
+    # sqlalchemyのブラックボックス的な内部実装により、以下の行があることにより、
+    # テスト関数内で flush()したときに、join_transaction_mode="create_savepoint"
+    # の設定と相まって、savepointが送信されることになる。逆に、以下の行を書かないと、
+    # 内部での if 条件に引っかからずに、flush() で通常のトランザクションだけが作られる。
     transaction = connection.begin()
 
     session = Session(
+        # bind には Engine, Connection のどちらも渡すことができる。内部で場合分けしてる。
+        # これも sqlalchemy のブラックボックスな実装。
         bind=connection,
         join_transaction_mode="create_savepoint",
     )

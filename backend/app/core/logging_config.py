@@ -6,20 +6,11 @@
 # 以上により、app/ は一つのパッケージとして認識され、そこに含まれる各モジュールの __name__ は app. からの文字列になる。
 # そして、各モジュールで getLogger(__name__) と書く慣例により、logging の階層がモジュール階層と一致する。
 import logging.config
-from pathlib import Path
 
 from app.core.config import get_settings
 
 
 def setup_logging():
-    # __file__ を使って、このファイル自身の絶対パスを取得し、そこから基準ディレクトリを決定する
-    base_dir = Path(__file__).resolve().parent.parent.parent
-
-    # ログディレクトリを絶対パスで指定
-    log_dir = base_dir / "logs"
-
-    # parents=True は、なければ親ディレクトリも一緒に作る、exist_ok=True は既に存在していてもエラーにしない、という意味
-    log_dir.mkdir(parents=True, exist_ok=True)
 
     logging_config = {
         "version": 1,
@@ -33,11 +24,8 @@ def setup_logging():
         "formatters": {
             "default": {
                 # name には、その logger の __name__ が入る
-                "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-                "datefmt": "%Y-%m-%d %H:%M:%S",
-            },
-            "detailed": {
                 "format": "%(asctime)s - %(name)s:%(funcName)s:%(lineno)d - %(levelname)s - %(message)s",
+                "datefmt": "%Y-%m-%d %H:%M:%S",
             },
         },
         "handlers": {
@@ -46,17 +34,6 @@ def setup_logging():
                 "level": "DEBUG",
                 "formatter": "default",
             },
-            "file": {
-                # RotatingFileHandler は、ログファイルが際限なく大きくなり続けるのを防ぐための仕組み
-                "class": "logging.handlers.RotatingFileHandler",
-                "level": "DEBUG",
-                "formatter": "detailed",
-                "filename": str(log_dir / "app.log"),
-                "maxBytes": 1024 * 1024 * 5,  # 5 MB
-                # 過去のログは最大3世代分 (app.log.1 〜 app.log.3) までが保持されるようになる。
-                "backupCount": 3,
-                "encoding": "utf-8",
-            },
         },
         # 以下は、「どんなログが来たら、どこへ、どういうフォーマットで書き込むか」という中央管理局・パイプラインを作っている
         "loggers": {
@@ -64,7 +41,7 @@ def setup_logging():
             # 実質的に、全てのライブラリ内に設定されている、全てのロガーのログ受付レベルを'WARNING'にしている。
             "": {
                 "level": "WARNING",
-                "handlers": ["console", "file"],
+                "handlers": ["console"],
             },
             # 自分のアプリ(app階層)だけを「特別扱い」する設定（例外）。fastapi dev コマンドを必ず backend/ で実行する
             # という前提、つまり　backend/ が sys.path に含まれるという前提なので、"app"は必ずパッケージになる。
@@ -82,13 +59,13 @@ def setup_logging():
                 "handlers": ["console"],
                 "propagate": False,
             },
-            # サーバーの起動・停止やライフサイクル、サーバーエラー等の稼働ログ（ファイルにも記録）
+            # サーバーの起動・停止やライフサイクル、サーバーエラー等の稼働ログ
             "uvicorn": {
                 "level": "INFO",
-                "handlers": ["console", "file"],
+                "handlers": ["console"],
                 "propagate": False,
             },
-            # クライアントからのHTTPリクエスト（アクセス）ごとのログ（流量が多いためコンソールのみ）
+            # クライアントからのHTTPリクエスト（アクセス）ごとのログ
             "uvicorn.access": {
                 "level": "INFO",
                 "handlers": ["console"],
