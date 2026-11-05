@@ -56,8 +56,8 @@ def get_db():
 
 #### 3. トランザクション管理オブジェクトの生成＆コネクション借用 (`autobegin` / `db.execute` 等)
 エンドポイント内で**最初のクエリ（`db.execute` 等）を発行した瞬間**、以下の準備が順番に行われます。
-1. **SQLAlchemy側のトランザクション管理オブジェクトの生成 (`autobegin`)**: まず `Session` の内部に、トランザクションの開始〜終了を管理するための Python オブジェクト（`SessionTransaction`）が自動生成されます。この時点ではまだ DB へ `BEGIN` は送られません（※なお、`db.add()` を呼んだ場合も、メモリ上の変更を追跡するためにこの管理オブジェクトだけは先に作られますが、コネクションを借りるのは後の flush／クエリ実行時です）。
-2. **コネクションの借用＆ドライバのインスタンス化**: 続いて、生成された管理オブジェクトがプールにコネクションを要求し、自分の管理下に置きます。プールに空きがあればそれを借り、空きがなければ**この瞬間に初めて `psycopg` の接続インスタンスが作られ、DBと物理接続（TCP）**します。
+1. **SQLAlchemy側のトランザクション管理オブジェクトの生成 (`autobegin`)**: まず `Session` の内部に、トランザクションの開始〜終了を管理するための Python オブジェクト（`SessionTransaction`）が自動生成されます。（このオブジェクトは `db.commit()` や `db.rollback()` が実行された際に破棄され、そのタイミングで借用していたコネクションもプールへ返却されます。）この生成時点ではまだ DB へ `BEGIN` は送られません（※なお、`db.add()` を呼んだ場合も、メモリ上の変更を追跡するためにこの管理オブジェクトだけは先に作られますが、コネクションを借りるのは後の flush／クエリ実行時です）。
+2. **コネクションの借用＆ドライバのインスタンス化**: コネクションをプールから取得・保持する責任は `SessionTransaction` が担っています。管理オブジェクトが Engine（のコネクションプール）へ接続を要求し、自分の管理下に置きます。プールに空きがあればそれを借り、空きがなければ**Engine 内（プール機構）でこの瞬間に初めて `psycopg` の接続インスタンスが作られ、DBと物理接続（TCP）**します。
 
 #### 4. DB上でトランザクションを張るタイミング（`BEGIN` の送信）
 プールからコネクションを借りた後、実際の **`BEGIN`** は `psycopg` が**最初の SQL を DB へ送る直前に暗黙的に**送信します。
@@ -70,7 +70,7 @@ from sqlalchemy.orm import Session
 @app.get("/users/{user_id}")
 def read_user(user_id: int, db: Session = Depends(get_db)):
     stmt = select(User).where(User.id == user_id)
-    
+
     # ↓ この最初の db.execute() を呼んだ瞬間に以下が順番に起きる：
     # 1. Session 内にトランザクション管理オブジェクトを生成（autobegin）
     # 2. 管理オブジェクトがプールからコネクションを借りる（空きがなければ psycopg がインスタンス化され物理接続）
@@ -203,7 +203,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 @app.get("/users/{user_id}")
 async def read_user(user_id: int, session: AsyncSession = Depends(get_async_db)):
     stmt = select(User).where(User.id == user_id)
-    
+
     # ↓ この最初の await session.execute() の瞬間に以下が順番に起きる：
     # 1. AsyncSession 内にトランザクション管理オブジェクトを生成（autobegin）
     # 2. 管理オブジェクトがプールからコネクションを借りる（空きがなければ psycopg が非同期で物理接続を確立）
