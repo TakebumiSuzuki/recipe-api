@@ -63,6 +63,18 @@ INSERT INTO users (status, bio) VALUES ('active', NULL) RETURNING id, created_at
 | **`created_at`** | 現在日時 | **データベース（DB側）** | SQLAlchemy が SQL からカラムを省くため、DB がテーブルの初期値（`DEFAULT` 設定）を適用する |
 | **`bio`** | `NULL` | **SQLAlchemy（Python側）** | デフォルト設定がないため、SQLAlchemy が `NULL` を明示的に INSERT 文に含める |
 
+> **📌 コラム：`bio` に `| None` をつけなかったら？**
+> `bio: Mapped[str] = mapped_column()` とすると、`bio` は **NOT NULL のカラム**になります。
+> * **インスタンス化時**：エラーにならない（型ヒントは実行時にチェックされない）
+> * **commit（flush）時**：SQLAlchemy は `NULL` を入れて INSERT するが、DB の NOT NULL 制約に違反して **`IntegrityError`** になる
+>
+> ```sql
+> INSERT INTO users (status, bio) VALUES ('active', NULL);
+> -- → IntegrityError: null value in column "bio" violates not-null constraint
+> ```
+> `status` と `created_at` も `| None` がないので NOT NULL ですが、`default` / `server_default` が値を入れるためエラーになりません。
+> **`| None` なし ＝ NOT NULL。値を渡さないなら `default` か `server_default` が必要です。**
+
 ---
 
 ## 4. 結論：なぜ引数なしでインスタンス化できるのか？
@@ -102,6 +114,10 @@ user = User(status=None, created_at=None, bio=None)
 
 直感的には「型も `| None`（NULL許容）だし、明示的に `None` を渡したのだから NULL が保存されそう」に見えますが、**`default` や `server_default` があるカラムではデフォルト値が勝つ** という挙動になります。
 
+> **📝 この挙動は値が `None` のときだけ**
+> `User(status="inactive")` のように普通の値を渡せば、その値がそのまま INSERT され、`default` は使われません。
+> デフォルト値に置き換わるのは、渡した値が `None` の場合に限られます。
+
 ```sql
 -- status は SQLAlchemy が値を埋め、created_at は SQL から省いて DB に初期値計算を任せる
 INSERT INTO users (status, bio) VALUES ('active', NULL);
@@ -111,14 +127,28 @@ INSERT INTO users (status, bio) VALUES ('active', NULL);
 
 | カラム | 保存結果 | 誰が補完するのか | 具体的な仕組み |
 | :--- | :--- | :--- | :--- |
-| **`status`** | `'active'` | **SQLAlchemy（Python側）** | `None` は未入力扱いとなり、Python 側の `default` で上書きされる |
+| **`status`** | `'active'` | **SQLAlchemy（Python側）** | INSERT 時は値が `None` のカラムを未指定と同じ扱いにする仕様のため、Python 側の `default` が適用される |
 | **`created_at`** | 現在日時 | **データベース（DB側）** | SQLAlchemy は `server_default` があるカラムを SQL から除外して送信するため、DB の `DEFAULT` が適用される |
 | **`bio`** | `NULL` | **SQLAlchemy（Python側）** | デフォルト値がないため、SQLAlchemy が明示的に NULL を送って保存される |
 
+> **🔍 SQLAlchemy は「`None` を渡した」と「何も渡さなかった」を区別できないの？**
+> いいえ、**区別はできています。** 2 章と同じ方法で確認すると、内部状態が違います。
+> ```python
+> inspect(User()).attrs.status.history.has_changes()             # False（未設定）
+> inspect(User(status=None)).attrs.status.history.has_changes()  # True（None が代入された）
+> ```
+> それでも同じ結果になるのは、INSERT 文を組み立てる処理（`orm/persistence.py`）で、**値が `None` のカラムを未指定と同じように INSERT の候補から外す**という仕様になっているためです。外されたカラムは 3 章のルール（`default` / `server_default` / NULL）で処理されます。
+> Python では `None` が「値なし」の意味でよく使われるため、「`None` ならデフォルトを使ってよい」という設計になっています（公式ドキュメント "Forcing NULL on a column with a default" 参照）。
+> なお、これは **INSERT 時だけ**の挙動です。DB に保存済みのオブジェクトに `user.status = None` を代入して UPDATE すれば、NULL になります。
+
 > **💡 あえてデフォルト値を無視して NULL を保存したいときは？**
-> カラムが NULL 許容（`| None`）であっても、Python の `None` ではデフォルト値をキャンセルできません。
-> 強制的に `NULL` を保存したい場合のみ、SQLAlchemy の **`null()`** を渡します。
+> カラムが NULL 許容（`| None`）であっても、通常は Python の `None` でデフォルト値をキャンセルできません。
+> NULL を保存したい場合は、SQLAlchemy の **`null()`** を渡します。
 > ```python
 > from sqlalchemy import null
 > user = User(status=null())  # INSERT INTO users (status, bio) VALUES (NULL, NULL)
+> ```
+> カラムの型に `evaluates_none()` を指定すれば、Python の `None` をそのまま NULL として保存させることもできます。
+> ```python
+> status: Mapped[str | None] = mapped_column(String().evaluates_none(), default="active")
 > ```

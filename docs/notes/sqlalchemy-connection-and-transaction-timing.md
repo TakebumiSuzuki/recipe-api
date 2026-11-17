@@ -137,7 +137,7 @@ def run_migrations_online() -> None:
 ```
 
 #### 3. トランザクションを張るタイミング (`with context.begin_transaction():`)
-`with context.begin_transaction():` ブロックに入った瞬間に、SQLAlchemy の `Connection` 内部に**トランザクション管理オブジェクト（`RootTransaction`）が生成（`connection.begin()`）**されます（`with` を抜けた際にドライバへ `commit()` / `rollback()` を指示するための管理役であり、この時点ではまだ DB へ `BEGIN` は送られません）。
+`with context.begin_transaction():` ブロックに入った瞬間に、SQLAlchemy の `Connection` 内部に**トランザクション管理オブジェクト（`RootTransaction`）が生成（`connection.begin()`）**されます（`context` が保持している `connection` オブジェクトに対してトランザクションの開始（`RootTransaction`の生成・管理）を指示しています。また、`RootTransaction`は、`with` を抜けた際にドライバへ `commit()` / `rollback()` を指示するための管理役でもあります。この時点ではまだ DB へ `BEGIN` は送られません）。
 実際の **`BEGIN`** は、`context.run_migrations()` の中で最初の SQL（`alembic_version` テーブルの確認 `SELECT` や DDL）を実行する直前に、`psycopg` が暗黙的に DB へ送信します。
 ブロックを正常に抜けると管理オブジェクトがドライバの `commit()` を呼び出し、DB へ **`COMMIT`** が送信されます（途中で例外が発生した場合は自動的に **`ROLLBACK`** が送信され、PostgreSQL では DDL も含めてロールバックされます）。
 
