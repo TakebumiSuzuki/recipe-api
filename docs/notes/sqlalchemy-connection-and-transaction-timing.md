@@ -10,7 +10,7 @@ PostgreSQL ドライバとして **psycopg (psycopg3)** を使用する場合（
   * 新世代の `psycopg`（旧 `psycopg2` の後継である psycopg 3系）は、**同期・非同期の両方にネイティブ対応**しています。
   * SQLAlchemy の URL スキームは、同期・非同期ともに `postgresql+psycopg://user:pass@host:port/dbname` を使います（どのエンジン関数に渡すかで同期モードか非同期モードかが切り替わります）。
 * **FastAPI と Alembic の違い**:
-  * **FastAPI** は ORM の状態管理（Identity Map 等）を行うため `Session` / `AsyncSession` を使い、コネクションプール（`QueuePool` / `AsyncAdaptedQueuePool`）を介して**最初のクエリ実行時に遅延接続（Lazy Connect）**します。
+  * **FastAPI** は ORM の状態管理（Identity Map 等）を行うため `Session` / `AsyncSession` を使い、コネクションプール（`QueuePool` / `AsyncAdaptedQueuePool`）を介して**最初のクエリ実行時（`flush` を含む）に遅延借用**します（空き接続がない場合のみ物理接続を確立）。
   * **Alembic** は DDL（`CREATE TABLE` 等）を単発で流し込むだけなので `Session` は使わず、プールなし（`NullPool`）の設定でエンジンの `connect()` メソッドから直接 `Connection` / `AsyncConnection` を取得します。
 * **同期版と非同期版の `connect()` の違い**:
   * **同期版 (`Engine.connect()`)**: 呼び出した瞬間にプールへコネクションを要求します。`NullPool` の場合、またはプールに空きがない場合に限り、ここで `psycopg.Connection.connect()` が走り物理接続（TCP）が確立されます（`QueuePool` に空きがあれば既存接続を借りるだけ）。
@@ -42,21 +42,21 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False)
 ```
 
 #### 2. Sessionの作成 (`SessionLocal()`)
-リクエストごとに `Depends(get_db)` で作成されます。メモリ上に `Session` オブジェクト（状態管理の箱）を作っただけで、**まだプールからコネクションは借りていません**。
+リクエストごとに `Depends(get_db_session)` で作成されます。メモリ上に `Session` オブジェクト（状態管理の箱）を作っただけで、**まだプールからコネクションは借りていません**。
 
 ```python
-def get_db():
+def get_db_session():
     # メモリ上にSessionインスタンスを作るだけ（まだ未接続・プール未借用）
-    db = SessionLocal()
+    db_session = SessionLocal()
     try:
-        yield db
+        yield db_session
     finally:
-        db.close()
+        db_session.close()
 ```
 
-#### 3. トランザクション管理オブジェクトの生成＆コネクション借用 (`autobegin` / `db.execute` 等)
-エンドポイント内で**最初のクエリ（`db.execute` 等）を発行した瞬間**、以下の準備が順番に行われます。
-1. **SQLAlchemy側のトランザクション管理オブジェクトの生成 (`autobegin`)**: まず `Session` の内部に、トランザクションの開始〜終了を管理するための Python オブジェクト（`SessionTransaction`）が自動生成されます。（このオブジェクトは `db.commit()` や `db.rollback()` が実行された際に破棄され、そのタイミングで借用していたコネクションもプールへ返却されます。）この生成時点ではまだ DB へ `BEGIN` は送られません（※なお、`db.add()` を呼んだ場合も、メモリ上の変更を追跡するためにこの管理オブジェクトだけは先に作られますが、コネクションを借りるのは後の flush／クエリ実行時です）。
+#### 3. トランザクション管理オブジェクトの生成＆コネクション借用 (`autobegin` / `db_session.execute` 等)
+エンドポイント内で**最初のクエリ（`db_session.execute` 等）を発行した瞬間**、以下の準備が順番に行われます。
+1. **SQLAlchemy側のトランザクション管理オブジェクトの生成 (`autobegin`)**: まず `Session` の内部に、トランザクションの開始〜終了を管理するための Python オブジェクト（`SessionTransaction`）が自動生成されます。（このオブジェクトは `db_session.commit()` や `db_session.rollback()` が実行された際に破棄され、そのタイミングで借用していたコネクションもプールへ返却されます。）この生成時点ではまだ DB へ `BEGIN` は送られません（※なお、`db_session.add()` を呼んだ場合も、メモリ上の変更を追跡するためにこの管理オブジェクトだけは先に作られますが、コネクションを借りるのは後の flush／クエリ実行時です）。
 2. **コネクションの借用＆ドライバのインスタンス化**: コネクションをプールから取得・保持する責任は `SessionTransaction` が担っています。管理オブジェクトが Engine（のコネクションプール）へ接続を要求し、自分の管理下に置きます。プールに空きがあればそれを借り、空きがなければ**Engine 内（プール機構）でこの瞬間に初めて `psycopg` の接続インスタンスが作られ、DBと物理接続（TCP）**します。
 
 #### 4. DB上でトランザクションを張るタイミング（`BEGIN` の送信）
@@ -68,38 +68,38 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 @app.get("/users/{user_id}")
-def read_user(user_id: int, db: Session = Depends(get_db)):
+def read_user(user_id: int, db_session: Session = Depends(get_db_session)):
     stmt = select(User).where(User.id == user_id)
 
-    # ↓ この最初の db.execute() を呼んだ瞬間に以下が順番に起きる：
+    # ↓ この最初の db_session.execute() を呼んだ瞬間に以下が順番に起きる：
     # 1. Session 内にトランザクション管理オブジェクトを生成（autobegin）
     # 2. 管理オブジェクトがプールからコネクションを借りる（空きがなければ psycopg がインスタンス化され物理接続）
     # 3. psycopg が BEGIN（暗黙）→ SELECT の順に DB へ送信
-    user = db.execute(stmt).scalar_one_or_none()
+    user = db_session.execute(stmt).scalar_one_or_none()
     return user
 ```
 
-#### 5. 終了時 (`db.close()`)
-レスポンス返却後、`get_db()` の `finally` ブロックで `db.close()` が呼ばれます。未コミットのトランザクションは自動的に `ROLLBACK` され、**物理接続は切断せずにコネクションプールへ返却**されます。
+#### 5. 終了時 (`db_session.close()`)
+レスポンス返却後、`get_db_session()` の `finally` ブロックで `db_session.close()` が呼ばれます。未コミットのトランザクションは自動的に `ROLLBACK` され、**物理接続は切断せずにコネクションプールへ返却**されます。
 
 ```python
     finally:
         # トランザクションを終了し、コネクションをプールに返却する（TCP接続は維持）
-        db.close()
+        db_session.close()
 ```
 
-> **💡 コラム：`db.close()` の裏側で起きている暗黙的な処理とSQL送信**
+> **💡 コラム：`db_session.close()` の裏側で起きている暗黙的な処理とSQL送信**
 >
-> `db.close()` の役割は、単にPython上のセッション（メモリ上のオブジェクト管理）を解体するだけではありません。**「DB側のトランザクションを確実に閉じ、クリーンな状態で接続をプールへ返却する」** という重要な役割を担っています。
+> `db_session.close()` の役割は、単にPython上のセッション（メモリ上のオブジェクト管理）を解体するだけではありません。**「DB側のトランザクションを確実に閉じ、クリーンな状態で接続をプールへ返却する」** という重要な役割を担っています。
 >
-> SQLAlchemyが最初のSQL（`SELECT` を含む）を実行する際、**ドライバ（`psycopg`）が自動的にDBへ `BEGIN` を送信**してトランザクションを開始します（SQLAlchemy自身は `BEGIN` 文を送らず、ドライバの暗黙仕様を前提としてトランザクション管理オブジェクトの状態だけを管理しています）。そのため、`db.close()` 到達時の状態によって、裏側で以下の通り制御が行われます。
+> SQLAlchemyが最初のSQL（`SELECT` を含む）を実行する際、**ドライバ（`psycopg`）が自動的にDBへ `BEGIN` を送信**してトランザクションを開始します（SQLAlchemy自身は `BEGIN` 文を送らず、ドライバの暗黙仕様を前提としてトランザクション管理オブジェクトの状態だけを管理しています）。そのため、`db_session.close()` 到達時の状態によって、裏側で以下の通り制御が行われます。
 >
 > - **参照（`SELECT`）のみ行った場合（コミットなし）**
->   `SELECT` のみでもドライバによって `BEGIN` が送信されているため、DB側はトランザクション中の状態になっています。そのままプールに返すとロック等が維持されてしまうため、`db.close()`（およびプールの返却処理）がドライバの `rollback()` を呼び出し、**ドライバからDBへ `ROLLBACK` を送信させてトランザクションを閉じてから** コネクションを返却します。
-> - **更新処理を行い `db.commit()` した場合**
->   `commit()` の時点でドライバ経由でDBへ `COMMIT` が送信され、トランザクションはすでに閉じています。そのため、`db.close()` 時には **SQLは送信されません**（※ただし、`commit()` 後に `db.refresh()` 等で再クエリが走った場合は、ドライバが再度 `BEGIN` を送信しているため `ROLLBACK` が送信されます）。
+>   `SELECT` のみでもドライバによって `BEGIN` が送信されているため、DB側はトランザクション中の状態になっています。そのままプールに返すとロック等が維持されてしまうため、`db_session.close()`（およびプールの返却処理）がドライバの `rollback()` を呼び出し、**ドライバからDBへ `ROLLBACK` を送信させてトランザクションを閉じてから** コネクションを返却します。
+> - **更新処理を行い `db_session.commit()` した場合**
+>   `commit()` の時点でドライバ経由でDBへ `COMMIT` が送信され、トランザクションはすでに閉じています（借用していたコネクションもこの時点でプールへ返却済みです）。そのため、`db_session.close()` 時には **SQLは送信されません**（※ただし、`commit()` 後に `db_session.refresh()` 等で再クエリが走った場合は、再度コネクションを借用してドライバが `BEGIN` を送信しているため `ROLLBACK` が送信されます）。
 > - **途中でエラー（例外）が発生した場合**
->   未完了のトランザクションが残っているため、`db.close()` がドライバの `rollback()` を呼び出し、**DBへ `ROLLBACK` を送信** して変更を破棄し、安全な状態でコネクションを返却します。
+>   未完了のトランザクションが残っているため、`db_session.close()` がドライバの `rollback()` を呼び出し、**DBへ `ROLLBACK` を送信** して変更を破棄し、安全な状態でコネクションを返却します。
 
 ---
 
@@ -137,7 +137,7 @@ def run_migrations_online() -> None:
 ```
 
 #### 3. トランザクションを張るタイミング (`with context.begin_transaction():`)
-`with context.begin_transaction():` ブロックに入った瞬間に、SQLAlchemy の `Connection` 内部に**トランザクション管理オブジェクト（`RootTransaction`）が生成（`connection.begin()`）**されます（`context` が保持している `connection` オブジェクトに対してトランザクションの開始（`RootTransaction`の生成・管理）を指示しています。また、`RootTransaction`は、`with` を抜けた際にドライバへ `commit()` / `rollback()` を指示するための管理役でもあります。この時点ではまだ DB へ `BEGIN` は送られません）。
+`with context.begin_transaction():` ブロックに入った瞬間に、`context` が保持している `connection` に対して内部で `connection.begin()` を呼び出し、SQLAlchemy の `Connection` 内に**トランザクション管理オブジェクト（`RootTransaction`）**を生成します。`RootTransaction` は、`with` ブロックを抜けた際に `context` からの終了通知を受けてドライバへ `commit()` / `rollback()` を指示する管理役です（この時点ではまだ DB へ `BEGIN` は送られません）。
 実際の **`BEGIN`** は、`context.run_migrations()` の中で最初の SQL（`alembic_version` テーブルの確認 `SELECT` や DDL）を実行する直前に、`psycopg` が暗黙的に DB へ送信します。
 ブロックを正常に抜けると管理オブジェクトがドライバの `commit()` を呼び出し、DB へ **`COMMIT`** が送信されます（途中で例外が発生した場合は自動的に **`ROLLBACK`** が送信され、PostgreSQL では DDL も含めてロールバックされます）。
 
@@ -178,18 +178,21 @@ AsyncSessionLocal = async_sessionmaker(bind=async_engine, expire_on_commit=False
 ```
 
 #### 2. Sessionの作成 (`AsyncSessionLocal()`)
-`async with AsyncSessionLocal() as session:` で作成します。`async with` 構文を使いますが、**ブロックに入った時点ではまだDB通信もコネクション借用も行いません**。
+リクエストごとに `Depends(get_async_db_session)` で作成されます。メモリ上に `AsyncSession` オブジェクトを作っただけで、**この時点ではまだDB通信もコネクション借用も行いません**。
 
 ```python
-async def get_async_db():
-    # AsyncSessionインスタンスを作るだけ（まだ未接続・プール未借用）
-    async with AsyncSessionLocal() as session:
-        yield session
+async def get_async_db_session():
+    # メモリ上にAsyncSessionインスタンスを作るだけ（まだ未接続・プール未借用）
+    db_session = AsyncSessionLocal()
+    try:
+        yield db_session
+    finally:
+        await db_session.close()
 ```
 
-#### 3. トランザクション管理オブジェクトの生成＆コネクション借用 (`autobegin` / `await session.execute(...)`)
-**最初の `await session.execute(...)` などを実行した瞬間**、同期版と同様に以下の順番で処理が走ります。
-1. **SQLAlchemy側のトランザクション管理オブジェクトの生成 (`autobegin`)**: `AsyncSession` の内部にトランザクション管理オブジェクトが自動生成されます（※ `session.add()` を呼んだ場合も、メモリ上の変更を追跡するためにこの管理オブジェクトだけは先に作られます）。
+#### 3. トランザクション管理オブジェクトの生成＆コネクション借用 (`autobegin` / `await db_session.execute(...)`)
+**最初の `await db_session.execute(...)` などを実行した瞬間**、同期版と同様に以下の順番で処理が走ります。
+1. **SQLAlchemy側のトランザクション管理オブジェクトの生成 (`autobegin`)**: `AsyncSession` の内部にトランザクション管理オブジェクト（実体は内部 `Session` の `SessionTransaction`、非同期ラッパーは `AsyncSessionTransaction`）が自動生成されます（※ `db_session.add()` を呼んだ場合も、メモリ上の変更を追跡するためにこの管理オブジェクトだけは先に作られます）。
 2. **コネクションの借用＆ドライバのインスタンス化**: 管理オブジェクトがプールからコネクションを借ります。プールに空き接続がなければ、**この `await` のタイミングで `psycopg` の非同期接続（`AsyncConnection`）がインスタンス化され、非同期で物理接続**が確立されます。
 
 #### 4. DB上でトランザクションを張るタイミング（`BEGIN` の送信）
@@ -201,32 +204,31 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 @app.get("/users/{user_id}")
-async def read_user(user_id: int, session: AsyncSession = Depends(get_async_db)):
+async def read_user(user_id: int, db_session: AsyncSession = Depends(get_async_db_session)):
     stmt = select(User).where(User.id == user_id)
 
-    # ↓ この最初の await session.execute() の瞬間に以下が順番に起きる：
+    # ↓ この最初の await db_session.execute() の瞬間に以下が順番に起きる：
     # 1. AsyncSession 内にトランザクション管理オブジェクトを生成（autobegin）
     # 2. 管理オブジェクトがプールからコネクションを借りる（空きがなければ psycopg が非同期で物理接続を確立）
     # 3. psycopg が BEGIN（暗黙）→ SELECT の順に非同期で DB へ送信
-    result = await session.execute(stmt)
+    result = await db_session.execute(stmt)
     return result.scalar_one_or_none()
 ```
 
-#### 5. 終了時 (`async with` を抜ける / `await session.close()`)
-`get_async_db()` の `async with` ブロックを抜ける際に自動的に `await session.close()` が呼ばれ、トランザクションを閉じてコネクションを**プールへ返却**します。
+#### 5. 終了時 (`await db_session.close()`)
+レスポンス返却後、`get_async_db_session()` の `finally` ブロックで `await db_session.close()` が呼ばれます。未コミットのトランザクションは自動的に `ROLLBACK` され、**物理接続は切断せずにコネクションプールへ返却**されます。
 
 ```python
-async def get_async_db():
-    async with AsyncSessionLocal() as session:
-        yield session
-    # ↑ async with を抜ける瞬間に自動で await session.close() が呼ばれ、プールへ返却される
+    finally:
+        # トランザクションを終了し、コネクションをプールに返却する（TCP接続は維持）
+        await db_session.close()
 ```
 
 ---
 
 ### ② Alembic（Poolなし：`NullPool`）
 
-非同期 Alembic（`alembic init -t async`）では、「接続は非同期で確立し、その後のマイグレーション処理自体は `connection.run_sync()` で同期関数に橋渡しして実行する」という構造になります。
+非同期 Alembic（`alembic init --template async`）では、「接続は非同期で確立し、その後のマイグレーション処理自体は `connection.run_sync()` で同期関数に橋渡しして実行する」という構造になります。
 
 #### 1. エンジンの作成 (`async_engine_from_config`)
 `NullPool` で非同期エンジンを作成します（**DB未接続**）。
@@ -303,5 +305,5 @@ def run_migrations_online() -> None:
 | **エンジン作成時** | 設定の読み込みと空プールの用意のみ（未接続） | 設定の読み込みのみ（未接続） |
 | **ドライバ生成＆物理接続** | **最初のクエリ実行時**（プールに空きがない場合のみ新規生成） | **`connect()` でブロックに入った瞬間**（毎回必ず新規生成） |
 | **コネクション借用** | **最初のクエリ実行時／flush 時**（`Session` 作成時ではない） | `connect()` 実行時（`NullPool` は接続を保持せず毎回新規生成） |
-| **トランザクション開始** | `db.add()` や最初のクエリ実行時（`autobegin` で管理オブジェクトを生成、実際の `BEGIN` は psycopg が SQL 直前に暗黙送信） | `context.begin_transaction()` 実行時（管理オブジェクトを生成、実際の `BEGIN` は同じく psycopg が暗黙送信） |
+| **SQLAlchemy側の論理トランザクション開始** | `db_session.add()` や最初のクエリ実行時（`autobegin` で管理オブジェクトを生成、実際の `BEGIN` は psycopg が SQL 直前に暗黙送信） | `context.begin_transaction()` 実行時（管理オブジェクトを生成、実際の `BEGIN` は同じく psycopg が暗黙送信） |
 | **処理終了後** | コネクションを**プールに返却**（TCP接続は維持） | コネクションを**物理的に切断・破棄** |
