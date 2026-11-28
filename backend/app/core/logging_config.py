@@ -1,10 +1,15 @@
-# このアプリは、backend/で fastapi dev することを前提としている。fastapi dev コマンドはこの階層を基準に、
-# 決められた順序(main.py → app.py → app/main.py などの候補リスト順)で階層をたどり、app/main.py を見つける。
-# その後、この階層から __init__.py の有無を親にのぼりながら検証することにより、結果的に backend/ がアプリの
-# ルートディレクトリだと決定され、sys.path に登録される。
+# このアプリは、backend/で fastapi dev や fastapi run を実行する
+# ことを前提としている。これらのコマンドはこの階層を基準に、決められた順序
+# (main.py → app.py → app/main.py などの候補リスト順)で階層をたどり、
+# このアプリの場合には、app/main.py を発見する。
+# その後、この階層から __init__.py の有無を親にのぼりながら検証すること
+# により、結果的に backend/ がアプリのルートディレクトリだと決定され、
+# sys.path に登録される。
 # (また、同時に、Uvicorn に渡す文字列（app.main:appなど）を完成させる。)
-# 以上により、app/ は一つのパッケージとして認識され、そこに含まれる各モジュールの __name__ は app. からの文字列になる。
-# そして、各モジュールで getLogger(__name__) と書く慣例により、logging の階層がモジュール階層と一致する。
+# 以上により、app/ は一つのパッケージとして認識され、そこに含まれる、
+# 各モジュールの __name__ 属性の値は app. から始まる文字列に決定される。
+# そして、各モジュールで getLogger(__name__) と書く慣例により、
+# logging の階層がモジュール階層と一致する。
 import logging.config
 
 from app.core.config import get_settings
@@ -74,8 +79,8 @@ def setup_logging():
         },
     }
 
-    # 以下が実行された時点で、ルートlogger ""と"app" などの logger がインスタンス化されている状態になる。
-    # ただし、正確にいうと、ルートlogger "" のほうは、import logging の時点でインスタンス化されている。
+    # dictConfig 実行時、設定辞書に書いた "app" などのロガーがメモリ上に生成・設定される。
+    # （なお、ルートロガー "" だけは import logging の時点で既に自動生成済みで、ここで設定が上書きされる）
     logging.config.dictConfig(logging_config)
 
     # このモジュールの __name__ の値は、 "app.core.logging_config" になる。
@@ -92,8 +97,8 @@ def setup_logging():
 sys.path には、通常、以下の優先順位（先頭から探索される順）でパスが入る:
 1. 実行したスクリプトのディレクトリ（または対話モード・-c 実行時のカレントディレクトリ CWD）
 2. 環境変数で指定した PYTHONPATH
-3. 標準ライブラリパス（インタープリタに紐づく lib のパス、つまり /usr/lib/python3.x/ など）
-4. pip install の場所（/usr/lib/python3.x/site-packages/ など）
+3. 標準ライブラリ（Python 本体に同梱の公式モジュール置き場: logging, json 等 → Python 本体の lib/python3.x/）
+4. 外部ライブラリ（uv add / pip install で追加したパッケージ置き場: fastapi 等 → .venv/lib/python3.x/site-packages/）
 
 なお、fastapi dev（または flask run）などのコマンドを実行すると、コマンド内の実装により、
 プロジェクトの基準ディレクトリ（CWD 等）が sys.path の先頭（インデックス 0）に自動的に追加される。

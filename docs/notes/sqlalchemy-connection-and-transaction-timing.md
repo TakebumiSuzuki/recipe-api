@@ -11,7 +11,7 @@ PostgreSQL ドライバとして **psycopg (psycopg3)** を使用する場合（
   * SQLAlchemy の URL スキームは、同期・非同期ともに `postgresql+psycopg://user:pass@host:port/dbname` を使います（どのエンジン関数に渡すかで同期モードか非同期モードかが切り替わります）。
 * **FastAPI と Alembic の違い**:
   * **FastAPI** は ORM の状態管理（Identity Map 等）を行うため `Session` / `AsyncSession` を使い、コネクションプール（`QueuePool` / `AsyncAdaptedQueuePool`）を介して**最初のクエリ実行時（`flush` を含む）に遅延借用**します（空き接続がない場合のみ物理接続を確立）。
-  * **Alembic** は DDL（`CREATE TABLE` 等）を単発で流し込むだけなので `Session` は使わず、プールなし（`NullPool`）の設定でエンジンの `connect()` メソッドから直接 `Connection` / `AsyncConnection` を取得します。
+  * **Alembic** は DDL（`CREATE TABLE` 等）を単発で流し込むだけなので `Session` は使わず、プーリング無効（`NullPool` を明示指定）の設定でエンジンの `connect()` メソッドから直接 `Connection` / `AsyncConnection` を取得します。
 * **同期版と非同期版の `connect()` の違い**:
   * **同期版 (`Engine.connect()`)**: 呼び出した瞬間にプールへコネクションを要求します。`NullPool` の場合、またはプールに空きがない場合に限り、ここで `psycopg.Connection.connect()` が走り物理接続（TCP）が確立されます（`QueuePool` に空きがあれば既存接続を借りるだけ）。
   * **非同期版 (`AsyncEngine.connect()`)**: `async with connectable.connect() as connection:` のブロックに入り、内部で `await` された瞬間に `await psycopg.AsyncConnection.connect()` が走り、物理接続が確立されます（プールの扱いは同期版と同じ）。
@@ -25,7 +25,7 @@ PostgreSQL ドライバとして **psycopg (psycopg3)** を使用する場合（
 
 ## 2. 同期 (Sync) の場合（ドライバ: `psycopg`）
 
-### ① FastAPI（Poolあり：`QueuePool`）
+### ① FastAPI（プーリングあり：`QueuePool`）
 
 #### 1. エンジンの作成 (`create_engine`)
 アプリ起動時に1回だけ実行されます。URLを解析し、空のコネクションプール（デフォルトは `QueuePool`）を用意するだけで、**この時点では `psycopg` の接続インスタンスは作られず、DBとも未接続**です。
@@ -95,18 +95,18 @@ def read_user(user_id: int, db_session: Session = Depends(get_db_session)):
 > SQLAlchemyが最初のSQL（`SELECT` を含む）を実行する際、**ドライバ（`psycopg`）が自動的にDBへ `BEGIN` を送信**してトランザクションを開始します（SQLAlchemy自身は `BEGIN` 文を送らず、ドライバの暗黙仕様を前提としてトランザクション管理オブジェクトの状態だけを管理しています）。そのため、`db_session.close()` 到達時の状態によって、裏側で以下の通り制御が行われます。
 >
 > - **参照（`SELECT`）のみ行った場合（コミットなし）**
->   `SELECT` のみでもドライバによって `BEGIN` が送信されているため、DB側はトランザクション中の状態になっています。そのままプールに返すとロック等が維持されてしまうため、`db_session.close()`（およびプールの返却処理）がドライバの `rollback()` を呼び出し、**ドライバからDBへ `ROLLBACK` を送信させてトランザクションを閉じてから** コネクションを返却します。
+>   `SELECT` のみでもドライバによって `BEGIN` が送信されているため、DB側はトランザクション中の状態になっています。そのままプールに返すとロック等が維持されてしまうため、`db_session.close()`（およびプールの返却処理）がドライバの `rollback()` を呼び出し、**ドライバからDBへ `ROLLBACK` を送信させてトランザクションを閉じてから** コネクションを返却します。このとき `SessionTransaction` は破棄され、`Session` は空の初期状態にリセットされます（関数終了後に破棄）。
 > - **更新処理を行い `db_session.commit()` した場合**
->   `commit()` の時点でドライバ経由でDBへ `COMMIT` が送信され、トランザクションはすでに閉じています（借用していたコネクションもこの時点でプールへ返却済みです）。そのため、`db_session.close()` 時には **SQLは送信されません**（※ただし、`commit()` 後に `db_session.refresh()` 等で再クエリが走った場合は、再度コネクションを借用してドライバが `BEGIN` を送信しているため `ROLLBACK` が送信されます）。
+>   `commit()` の時点でドライバ経由でDBへ `COMMIT` が送信され、トランザクションはすでに閉じています（借用していたコネクションもこの時点でプールへ返却済みです）。そのため、`db_session.close()` 時には **SQLは送信されません**（※ただし、`commit()` 後に `db_session.refresh()` 等で再クエリが走った場合は、再度コネクションを借用してドライバが `BEGIN` を送信しているため `ROLLBACK` が送信されます）。`SessionTransaction` は `commit()` 時点で破棄済み（再クエリ時は再生成され `close()` で破棄）で、`Session` は `close()` で空の初期状態にリセットされます（関数終了後に破棄）。
 > - **途中でエラー（例外）が発生した場合**
->   未完了のトランザクションが残っているため、`db_session.close()` がドライバの `rollback()` を呼び出し、**DBへ `ROLLBACK` を送信** して変更を破棄し、安全な状態でコネクションを返却します。
+>   未完了のトランザクションが残っているため、`db_session.close()` がドライバの `rollback()` を呼び出し、**DBへ `ROLLBACK` を送信** して変更を破棄し、安全な状態でコネクションを返却します。DBエラー後は `Session` が操作不能になりますが、`close()` で `SessionTransaction` が破棄されるとともに解除され、空の初期状態にリセットされます（関数終了後に破棄）。
 
 ---
 
-### ② Alembic（Poolなし：`NullPool`）
+### ② Alembic（プーリング無効：`NullPool`）
 
 #### 1. エンジンの作成 (`engine_from_config`)
-マイグレーションコマンド実行時に `env.py` 内で作成されます。`poolclass=pool.NullPool` を指定するためプールは作られません（**この時点ではDB未接続**）。
+マイグレーションコマンド実行時に `env.py` 内で作成されます。`poolclass=pool.NullPool` を明示指定するため、接続を使い回さない `NullPool` インスタンスが用意されます（**この時点ではDB未接続**）。
 
 ```python
 # alembic/env.py
@@ -116,7 +116,7 @@ from alembic import context
 config = context.config
 
 def run_migrations_online() -> None:
-    # NullPool（プールなし）でエンジンを作成（まだDBには未接続）
+    # NullPool（プーリング無効）でエンジンを作成（まだDBには未接続）
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
@@ -125,7 +125,7 @@ def run_migrations_online() -> None:
 ```
 
 #### 2. コネクション確立＆ドライバのインスタンス化 (`with connectable.connect() as connection:`)
-この行を実行した瞬間に **`psycopg` がインスタンス化され、DBと物理接続**します（プールがないため毎回必ず新規接続）。
+この行を実行した瞬間に **`psycopg` がインスタンス化され、DBと物理接続**します（`NullPool` のため接続を使い回さず毎回必ず新規接続）。
 
 ```python
     # ↓ この connect() を呼んだ瞬間に psycopg がインスタンス化され、DBへ物理接続する
@@ -162,7 +162,7 @@ def run_migrations_online() -> None:
 
 基本的なライフサイクルは同期と同じですが、**「`await`（または `async with`）されるタイミング」**で実際のI/O通信が走る点が異なります。
 
-### ① FastAPI（Poolあり：`AsyncAdaptedQueuePool`）
+### ① FastAPI（プーリングあり：`AsyncAdaptedQueuePool`）
 
 #### 1. エンジンの作成 (`create_async_engine`)
 アプリ起動時に作成されます。同じ `postgresql+psycopg://...` のURLを渡すと、`create_async_engine` が自動的に `psycopg` の非同期ドライバ（`AsyncConnection`）を使うよう構成します（**まだDB未接続**）。
@@ -226,7 +226,7 @@ async def read_user(user_id: int, db_session: AsyncSession = Depends(get_async_d
 
 ---
 
-### ② Alembic（Poolなし：`NullPool`）
+### ② Alembic（プーリング無効：`NullPool`）
 
 非同期 Alembic（`alembic init --template async`）では、「接続は非同期で確立し、その後のマイグレーション処理自体は `connection.run_sync()` で同期関数に橋渡しして実行する」という構造になります。
 
@@ -301,8 +301,8 @@ def run_migrations_online() -> None:
 | 項目 | FastAPI (Sync / Async) | Alembic (Sync / Async) |
 | :--- | :--- | :--- |
 | **使用ドライバ (URL)** | `postgresql+psycopg://...` | `postgresql+psycopg://...` |
-| **Pool設定** | あり（`QueuePool` / `AsyncAdaptedQueuePool`） | なし（`NullPool`） |
-| **エンジン作成時** | 設定の読み込みと空プールの用意のみ（未接続） | 設定の読み込みのみ（未接続） |
+| **プーリング（接続の使い回し）** | する（`QueuePool` / `AsyncAdaptedQueuePool`） | しない（`NullPool` を明示指定） |
+| **エンジン作成時** | 設定の読み込みと空の `QueuePool` 等の用意（未接続） | 設定の読み込みと `NullPool` の用意（未接続） |
 | **ドライバ生成＆物理接続** | **最初のクエリ実行時**（プールに空きがない場合のみ新規生成） | **`connect()` でブロックに入った瞬間**（毎回必ず新規生成） |
 | **コネクション借用** | **最初のクエリ実行時／flush 時**（`Session` 作成時ではない） | `connect()` 実行時（`NullPool` は接続を保持せず毎回新規生成） |
 | **SQLAlchemy側の論理トランザクション開始** | `db_session.add()` や最初のクエリ実行時（`autobegin` で管理オブジェクトを生成、実際の `BEGIN` は psycopg が SQL 直前に暗黙送信） | `context.begin_transaction()` 実行時（管理オブジェクトを生成、実際の `BEGIN` は同じく psycopg が暗黙送信） |

@@ -6,28 +6,31 @@ from alembic import context
 from app.core.config import get_settings
 
 # alembic コマンドを叩くと、context という箱が勝手に作られる。
-# この時点では、この箱には、alembic.ini からの文字情報しか入っていない。
+# この時点では ini からの情報とコマンド情報のみで、DB接続やモデル定義はまだ未設定。
 # この env.py ファイルが実行されると、「このDBに繋いで！」「このテーブル定義を見て！」
 # のように、箱に情報を詰め、最後の部分でマイグレーションが走る
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
-# config の実体は Alembic 独自の Config オブジェクトで、内部的には ini ファイルを
-# パースした結果（セクションやキーバリュー）を辞書のように保持・管理している入れ物。
+# context.config の実体は Alembic 独自の Config オブジェクトで、内部的には
+# ini ファイルをパースした結果（セクションやキーバリュー）を辞書のように保持・管理
+# している入れ物。
 # Alembicが起動すると ini ファイルはパースされ、ここに読み込まれている。
-# ini ファイルには loggin設定のみが書かれていて、以下の行でロガーの初期化に利用される。
+# 本アプリにおいて、ini ファイルには loggin設定のみが書かれていて、ロガーの初期化に利用される。
 config = context.config
 
 # main とは、alembic.ini における [alembic] セクション のこと。
 # 本プロジェクトでは ini の中にデフォルトで記述されていた [alembic] 項目を削除したので
 # ここで注入する。つまり、環境変数から動的に注入している (git の追跡を逃れるため。)
+# もし、このように動的に入れない場合には、ini ファイルに以下のように書くことになる。
+# [alembic]
+# sqlalchemy.url = postgresql://user:password@localhost:5432/dbname
 config.set_main_option("sqlalchemy.url", get_settings().database_uri)
 
-# Interpret the config file for Python logging.
-# This line sets up loggers basically.
 # ini ファイルが見つかり、読み込まれている場合に、
 # Python 標準の logging.config.fileConfig 関数が、alembic.iniからログ設定部分
-# だけを読み込んで適用しています。(ini ファイルを pythonの logging にも使わせている)
+# （[loggers]、[handlers] など）だけを読み込んで適用しています。
+# config.config_file_name には、alembic.ini のファイルパス文字列が入っている。
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
@@ -70,16 +73,26 @@ def run_migrations_online() -> None:
     """
     # connectable とは engine オブジェクトのこと
     # engine_from_config は SQLAlchemy からの関数。中身は create_engine() と同じ
+    # ちなみに、configを一切経由せずに、普通に create_engie を使っても良い
     connectable = engine_from_config(
+        # alembic.ini の [alembic]セクションの中身を丸ごと辞書として取得している。
+        # "sqlalchemy.url"だけでなく、(もし設定していれば)"sqlalchemy.echo"なども含む。
         config.get_section(config.config_ini_section, {}),
         # 辞書の中から「どの文字で始まるキーを拾うか」の指定
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
 
+    # 実際のDBコネクションが確立される。
+    # で、with を抜ける時には、以下の2つが行われる。
+    # 未完了のトランザクションがあればロールバック & RootTransaction 破棄
+    # コネクションの返却（ただし、ここでは NullPool なので即切断）
     with connectable.connect() as connection:
-        context.configure(connection=connection, target_metadata=target_metadata)
-
+        context.configure(
+            connection=connection,
+            target_metadata=target_metadata,
+        )
+        # この部分で RootTransactionが作られる。(SessionTransationは使われない)
         with context.begin_transaction():
             context.run_migrations()
 

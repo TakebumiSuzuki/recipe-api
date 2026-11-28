@@ -3,13 +3,15 @@
 ## 1. インストール (`uv add alembic`)
 - **本番依存関係に追加する**（`--dev` は不要）。
 - 本番環境（デプロイ時やコンテナ起動時）でも `alembic upgrade head` によるマイグレーション実行が必要となるため。
+  - ここでいう `head` というのは、実行環境（本番ならデプロイされたコンテナ内）の `alembic/versions/` 配下にあるマイグレーションファイル群のうち、ファイル名順ではなく `revision` / `down_revision` の親子関係をたどった最新リビジョンを指す。
+  - 未適用のマイグレーションファイルを複数貯めておき、後で `alembic upgrade head` を 1 回実行して順番にまとめて適用することも可能（本番デプロイ時の通常運用）。ただし、ローカルで `--autogenerate` を使う場合は DB が最新の `head` 状態である必要があるため、その都度 `upgrade` しておく必要がある。
 
 ## 2. 初期化コマンド (`alembic init`)
 ```bash
 uv run alembic init -t pyproject alembic
 ```
-- **`-t pyproject`**: テンプレート名（ファイル名ではない）。カレントの `pyproject.toml` を自動検知し、`[tool.alembic]` セクションに設定を追記する。
-  - ※ 非同期（SQLAlchemy `AsyncEngine` 等）を使用する場合は `-t pyproject_async` を指定。
+- **`-t pyproject`（`--template pyproject` の略）**: テンプレート名（ファイル名ではない）。カレントの `pyproject.toml` を自動検知し、`[tool.alembic]` セクションに設定を追記する。
+  - **非同期テンプレート（`-t pyproject_async`）の使い分け**: マイグレーション自体は単発実行のため本来非同期化は不要。ただし、アプリ側が `asyncpg` 等の非同期専用ドライバのみを使用しており「同期ドライバの追加インストールを避けたい」「接続 URL（`postgresql+asyncpg://...`）をそのまま共有したい」場合に選択する（`psycopg` v3 等で同期接続できるならシンプルな同期版で十分）。
 - **末尾の `alembic`**: 新規作成されるマイグレーションディレクトリ名（`env.py` や `versions/` 等が格納される。`migrations` など任意の名前も可）。
 
 ## 3. 主要ファイルと役割分担
@@ -46,7 +48,7 @@ Alembic を導入すると、主に以下の 3 つのファイルが連携して
 
 #### (2) `alembic.ini`（ロギング設定として残る理由）
 `alembic.ini` が独立して残されている最大の理由は、`env.py` で使われる **Python 標準の `logging.config.fileConfig()` が INI 形式にしか対応していない（TOML 非対応）ため**。
-`fileConfig()` は `alembic.ini` 内からロギング用セクション（`[loggers]`, `[handlers]` 等）のみを読み込み、それ以外のセクションは無視してロガーを初期化する。
+`fileConfig()` は `ini`ファイル 内からロギング用セクション（`[loggers]`, `[handlers]` 等）のみを読み込み、それ以外のセクションは無視してロガーを初期化する。
 
 #### (3) データベース接続先（`sqlalchemy.url`）の実務的な扱い
 `alembic.ini` に接続情報をハードコードするのは、機密情報漏洩や環境差分の観点からアンチパターン（Git 管理されるため）。
@@ -83,8 +85,8 @@ Alembic を `uv run alembic` などで実行する場合、実体としては仮
 ### (2) `context` と `config` の役割の違い
 - **`context`（実行エンジンの司令塔）**:
   Alembic のマイグレーション実行ランタイムそのもの。モード判定（`is_offline_mode`）、モデル情報や接続のバインド（`configure`）、トランザクション制御（`begin_transaction`）、マイグレーション適用（`run_migrations`）など全工程を駆動するため、インポートは必須。
-- **`config` (`context.config`)**:
-  設定ファイル（INI や TOML）へのアクセサ。DB 接続先をコード側から注入する場合、接続用としての役割は不要になるが、`fileConfig(config.config_file_name)` へロギング設定ファイルのパスを渡すために保持される。
+- **`context.config`**:
+  設定ファイル（INI や TOML）へのアクセサ。`fileConfig(config.config_file_name)` のようにして、ロギング設定ファイルのパスを渡すために保持される。
 
 ### (3) `config.set_main_option` による動的注入の仕組み
 Pydantic Settings 等から安全に `database_uri` を渡す実務的なベストプラクティスとして、Alembic 公式が推奨する `config.set_main_option("sqlalchemy.url", ...)` がある。

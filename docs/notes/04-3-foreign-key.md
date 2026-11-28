@@ -249,7 +249,7 @@ RESTRICT | CASCADE | SET NULL | SET DEFAULT | NO ACTION
       [Error]           ──④【安全停止】IntegrityError (NOT NULL constraint failed) でロールバック
   ```
   > **⚠ 注意：SET DEFAULT を安全に使うには、子を事前にロードしないこと**
-  > `passive_deletes=True` を設定しているので、意図的に `user.recipes` にアクセスしない限り子はロードされず、ケースA（正常系）が走る。ただし、うっかりロード済みの子がいるとケースB（NOT NULL 制約違反）で失敗するため注意が必要。
+  > `passive_deletes=True` を設定しているので、意図的に `user.recipes` にアクセスしない限り子はロードされず、ケースA（正常系）が走る。ただし、うっかりロード済みの子がいるとケースB（NOT NULL 制約違反）で失敗するため注意が必要。または、`passive_deletes="all"`　を設定するという回避策もある。これだと子を無視するのでDB側は問題なく親の削除、子の Default 値への変更が問題なく通る。ただ、SQLAlchemy側のデーターもそれに合わせて手動でアップデートする必要がある。
 
 ---
 
@@ -258,7 +258,7 @@ RESTRICT | CASCADE | SET NULL | SET DEFAULT | NO ACTION
 `session.commit()`では、メモリ側で以下の重要な処理が自動的に行われています。
 
 1. **コミットした瞬間：Session 内の全キャッシュが「有効期限切れ（expired）」になる**
-   * コミットが成功すると、Identity Map にモデルオブジェクトへの参照を残したまま、そのオブジェクトの属性値（カラムデータ）が一括で消去されます。（SQLAlchemy の `expire_on_commit=True` という既定仕様の場合）。
+   * コミットが成功すると、Identity Map にモデルオブジェクトへの参照を残したまま、インスタンスの `__dict__` からマッピング済み属性がすべて取り除かれ、期限切れ（expired）フラグも立ちます（SQLAlchemy の `expire_on_commit=True` という既定仕様の場合）。
    * 自身のコミットに伴う DB
   側の変更（制約・トリガー）に加え、次期トランザクションで他者による更新も正しく読み込むため、メモリ上の属性値を一旦消去する安全設計です。
 
@@ -293,7 +293,7 @@ RESTRICT | CASCADE | SET NULL | SET DEFAULT | NO ACTION
 | **`merge`** | 親を `merge` したら子も自動更新 | **自動で動く**（左と同じ） |
 | **`delete`** | **親の `delete` 時に子にも削除フラグをつける**<br>👉 結果的に flush / commit 時に親子両方に DELETE の SQL が発行される | **親に削除フラグ、子に親IDの NULL 更新フラグ（変更フラグ）がつく**<br>👉 結果的に flush / commit 時に整合性を保つため子の親IDを NULL 更新する UPDATE SQL が発行される |
 | **`expunge`** | 親をセッションから外したら子も外す | **動かない**<br>👉 親だけ外れ、子は残る |
-| **`refresh-expire`** | • 親を expire() した場合 ➔ 子も expire される<br>• 親を refresh() した場合 ➔ 親は最新化される(select発行)、子は expire される | **フラグは付かない**<br>👉 親だけ処理され、子のキャッシュは残る |
+| **`refresh-expire`** | • 親の `expire()` ➔ 親の全属性（カラム＋リレーション枠）と **子オブジェクト本体** を expire<br>• 親の `refresh()` ➔ 親の全属性（カラム＋リレーション枠）と **子オブジェクト本体** を expire（※その後、親のカラムだけ SELECT で再取得） | • 親の `expire()` ➔ 親の全属性（カラム＋リレーション枠）のみ expire（**子オブジェクト本体は expire されない**）<br>• 親の `refresh()` ➔ 親の全属性（カラム＋リレーション枠）のみ expire（**子オブジェクト本体は expire されない**。※その後、親のカラムだけ SELECT で再取得） |
 | **`delete-orphan`** | **親のリストから外された子に削除フラグをつける**<br>👉 結果的に flush / commit 時にその子の DELETE の SQL が発行される | **削除フラグではなく親IDの NULL 更新フラグがつく**<br>👉 子は消さず、親IDを NULL 更新する UPDATE SQL が発行される |
 
 * 上から 5 つ（`save-update` 〜 `refresh-expire`）を一括有効化する指定が **`cascade="all"`**。
@@ -313,11 +313,13 @@ RESTRICT | CASCADE | SET NULL | SET DEFAULT | NO ACTION
 ### `refresh-expire` の詳細まとめ
 
 #### 1. 結局何をするのか？
-**「親に対して `session.refresh()` または `session.expire()` を呼んだとき、リレーション先の子のメモリキャッシュも破棄（expire）する」** 設定。
+**「親に対して `session.refresh()` または `session.expire()` を呼んだとき、親の全属性（カラム＋リレーション枠）だけでなく、リレーション先の子のメモリキャッシュも破棄（expire）する」** 設定。
 
+* **`session.refresh(親)` の内部動作（2ステップ）**:
+  1. まず親のキャッシュを強制的に破棄（expire）する（`refresh-expire` がオンなら、ここで**ついでに子も expire** する）。
+  2. 直後に親のカラムだけ `SELECT` を飛ばして最新値を詰め直す（子の目録枠 `user.items` はこの場では取得されず、後で触れた瞬間に遅延ロードで更新される）。
 * **重要ポイント**:
-  * その場で子供の **SELECT（再取得）クエリが走るわけではない**。
-  * 子供の古いキャッシュを破棄して「期限切れ（expired）」マークをつけるだけ。
+  * 子供の **SELECT（再取得）クエリは走らない。**
   * 実際の子供のデータは、その後コード内で `item.name` などに**アクセスした瞬間に初めて、裏で遅延取得（Lazy Load）** される。
 
 #### 2. オンとオフの違い（同一トランザクション内）
@@ -336,12 +338,10 @@ RESTRICT | CASCADE | SET NULL | SET DEFAULT | NO ACTION
 * **`commit()` の直後に `session.refresh(user)` を呼ぶ場合は？**
   * 👉 **オンでもオフでも挙動は全く同じ。**
   * `commit()` した瞬間にそもそも子供も含め全オブジェクトが expire されるため、オン・オフの差は出ない。
-* **子供もその場で即座に一括 SELECT して最新化したい場合は？**
-  * 👉 `refresh-expire` では不可（キャッシュを捨てるだけのため）。
-  * ~~`session.refresh(user, attribute_names=["items"])` と明示的に指定する。~~ ← **訂正（実機で確認）**
-    * これで最新化されるのは **子のリストの顔ぶれ（DB 側での追加・削除）だけ**。
-    * **既にメモリにある子の値（`item.name` など）は古いまま**。子オブジェクト自身は expire されないため、SELECT で返ってきた値は Identity Map に捨てられる。
-  * 子の値まで確実に最新化したい場合は、**`populate_existing=True` で取り直す**（次の「7. 方針」を参照）。
+* **子供も「その場で即座に」最新化したい場合は？**
+  * **`session.refresh(user)`（引数なし）**：不可。`refresh-expire` がオンでも、その場では `items` の SELECT すら飛ばず、目録も中身も更新されない（expire するだけ）。
+  * **`session.refresh(user, attribute_names=["items"])`（引数あり）**：不可。その場で `items` の SELECT は飛び**目録（追加・削除）だけは最新になる**が、引数指定時は `refresh-expire` がオンでも無視される（無効扱いされる）ため、**すでにメモリにある子の中身（`item.name` 等）は上書きされず古いまま**になる。
+  * 👉 **解決策**：その場で子の中身まで確実に最新化したい場合は、**`select` ＋ `selectinload` ＋ `populate_existing=True`** で取り直す（次の「7. 方針」を参照）。
 
 #### 4. 設定の重要度
 * **結論：重要度は「極めて低い」。基本はデフォルト（オフ）のままでOK。**
@@ -362,7 +362,7 @@ RESTRICT | CASCADE | SET NULL | SET DEFAULT | NO ACTION
 | `attribute_names` なし × オフ（既定） | 全て最新化 | expire される | 何もしない | SQL は飛ぶが **子の値は古いまま** |
 | `attribute_names` なし × オン | 全て最新化 | expire される | **expire される** | SQL が飛び **最新値になる** |
 | `attribute_names=["name"]` × オン/オフ | 指定列のみ最新化 | 何もしない | 何もしない | SQL は飛ばず、メモリの値のまま |
-| `attribute_names=["items"]` × オン/オフ | 何もしない | 即座に再取得 | 何もしない | リストの顔ぶれは最新、**既存の子の値は古いまま** |
+| `attribute_names=["items"]` × オン/オフ | 何もしない | 即座に再取得 | 何もしない | リストの目録は最新、**既存の子の値は古いまま** |
 
 * `attribute_names` を渡すと、**`refresh-expire` の設定は無視される**（内部で cascade 処理を通らないため）。
 * 「SQL が飛んだのに古いまま」になるのは、**expire されていないオブジェクトは、DB から返ってきた行で上書きしない**という Identity Map の仕様のため。
@@ -413,35 +413,58 @@ async def create_user(session: AsyncSession, data) -> User:
 
 `commit()` の直後に `user.id` を読むだけでも同じエラーになる（`id` も expire されているため）。
 
-### 実機での検証結果（SQLAlchemy 2.1.3 + aiosqlite）
+### 基本対策：`expire_on_commit=False` にする（公式推奨）
 
-`commit()` 後に、同期コードで親のカラムと子リレーション `posts` を読んだ結果。
+非同期（`AsyncSession`）では、セッション生成時に **`expire_on_commit=False`** を指定するのが基本です（公式ドキュメントでも推奨）。
 
-| commit 後の処理 | カラムのみ | `posts` も含める |
-| :--- | :--- | :--- |
-| 何もしない（既定） | ✗ | ✗ |
-| `await session.refresh(user)` | ✓ | ✗（リレーションはロードされない） |
-| `await session.refresh(user, attribute_names=["posts"])` | ✗（カラムは expire のまま） | ✗ |
-| 上の2つを両方呼ぶ | ✓ | ✓ |
-| `select` ＋ `selectinload(User.posts)` で取り直す | ✓ | ✓ |
-| `expire_on_commit=False` | ✓ | △（メモリ上にある分は ✓、未ロードのリレーションは ✗） |
+```python
+async_session = async_sessionmaker(engine, expire_on_commit=False)
+```
 
-### 対処法
+これにより、`await session.commit()` してもメモリ上の属性が expire されなくなるため、**ロード済みのカラム（`user.id`, `user.name` 等）はそのまま同期コード（FastAPI / Pydantic）から読める**ようになります。
 
-1. **リレーションも返す場合：`select` ＋ `selectinload` で取り直す（推奨）**
-   ```python
-   await session.commit()
-   stmt = select(User).where(User.id == user_id).options(selectinload(User.posts))
-   return (await session.scalars(stmt)).one()
-   ```
-   `commit()` 後は全て expire されているので、`populate_existing` を付けなくても最新値が入る。
-   ※ `user_id` は commit **前**に変数に取っておく（commit 後に `user.id` を読むとそれ自体がエラーになる）。
+ただし、`expire_on_commit=False` で全問題が解決するわけではありません。この設定を前提に、次の 3 つの落とし穴だけ押さえておく必要があります。
 
-2. **カラムだけ返す場合：`await session.refresh(user)`**
-   リレーションが必要なら `attribute_names` でリレーション名を指定する。ただし `attribute_names` を指定すると**指定したものしか読み込まれない**ので、カラムも必要なら `refresh()` を2回呼ぶか、1 の方法にする。
+---
 
-3. **`async_sessionmaker(engine, expire_on_commit=False)`**
-   非同期では公式ドキュメントでも推奨されている設定。commit 後もメモリ上の値がそのまま使える。
-   ただし、
-   * **未ロードのリレーションには使えない**（アクセスすると MissingGreenlet）。`selectinload` で事前にロードしておく必要がある。
-   * DB 側で生成・変更された値（`server_default`、トリガーなど）は**自動では反映されない**。必要なら `refresh()` する。
+### `expire_on_commit=False` 前提での注意点と対処法
+
+#### 1. 未ロードのリレーションに触れると `MissingGreenlet` になる
+`expire_on_commit=False` が守るのは **「すでにメモリ上にある値」だけ** です。
+まだロードしていないリレーション（例：`user.posts`）に同期コードからアクセスすると、遅延ロード（Lazy Load）が走ろうとして `MissingGreenlet`（セッション終了後なら `DetachedInstanceError`）で失敗します。
+
+* **対処法（推奨）**：`select()` の時点で `selectinload` を付けて事前にロードしておく。
+  ```python
+  stmt = select(User).where(User.id == user_id).options(selectinload(User.posts))
+  user = (await session.scalars(stmt)).one()
+  ```
+* すでに `user` を持っていて、未ロードの `posts` だけ後から読み込みたい場合は `await session.refresh(user, attribute_names=["posts"])` でも可（親のカラムは expire されないため消えない）。
+  * ※ **新規作成時の罠**：`user = User(name="Alice")` で作って `commit()` した直後でも、`posts` を渡していなければ「空リスト `[]`」ではなく「未ロード扱い」のまま。そのままレスポンスで `user.posts` に触れると裏で `SELECT` が走ろうとして `MissingGreenlet` で落ちる（`User(name="Alice", posts=[])` と空リストを明示しておけば回避できる）。
+
+#### 2. DB 側で自動生成・更新された値は自動で反映されない
+`commit()` で再読み込みが走らないため、DB 側のトリガー、`onupdate`、`server_default`（特に `UPDATE` 時の `updated_at` など）はメモリ上に自動反映されません。
+
+* **カラムだけ最新化したい場合**：`await session.refresh(user)` を呼ぶ。
+* **リレーションも返す場合の注意**：引数なしの `await session.refresh(user)` は親の属性を全部リセットするため、事前にロードしていた `user.posts` も未ロードに戻ってしまう（`cascade` 設定に関係なく）。その場合の対処は次の 2 通り：
+  1. **`refresh()` を続けて 2 回呼ぶ**：`await session.refresh(user)` の **後に** `await session.refresh(user, attribute_names=["posts"])` を呼んで `posts` を読み直す（※ 逆順は不可。また `refresh-expire` がオフだと、既存ロード済みの子のカラム値までは上書きされない）。
+  2. **`select` ＋ `selectinload` ＋ `populate_existing=True` で取り直す**：親も子の中身もまとめて DB の最新値で確実に上書きできるため最も安全。
+
+#### 3. 同一セッション内で「同じ行を 2 回読む」と古いキャッシュが返る
+`commit()` してもキャッシュが消えないため、同じ `AsyncSession` 内で次のような操作をすると Identity Map の古い値が優先されます。
+
+* `commit()` を 2 回以上挟んで同じ行を再 `select()` する場合
+* `Depends`（例：`get_current_user`）で先に読んだモデルを、エンドポイント内で `with_for_update()` して最新値で取り直したい場合
+
+このケースでは **`execution_options(populate_existing=True)`** を付けて取り直します（セクション 7 を参照）。
+※ 通常の FastAPI（1 リクエスト＝1 セッション、最後に 1 回だけ `commit()`）であれば、このケースはめったに起きません。
+
+---
+
+### まとめ（`expire_on_commit=False` 前提）
+
+| やりたいこと | 推奨する書き方 |
+| :--- | :--- |
+| 作成・更新後に**カラムだけ**返す | `await session.commit()` のまま返す（DB 自動生成値が必要なら `await session.refresh(user)`） |
+| **リレーションも含めて**返す | `select(User).options(selectinload(User.posts))` で事前にロードしておく |
+| 未ロードのリレーションだけ後から足す | `await session.refresh(user, attribute_names=["posts"])`（※ 既存ロード済みの子の値までは上書きされない） |
+| DB 側変更も含め**親子まとめて最新化** | `select` ＋ `selectinload` ＋ `execution_options(populate_existing=True)` |

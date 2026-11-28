@@ -20,8 +20,13 @@ dev = [
 extend-select= ["UP","I","B"]
 
 [tool.pytest.ini_options]
-# この pyproject.toml が置かれているディレクトリが基準　
+# テスト実行時に、アプリ側のコードを import できるようにするための sys.path 設定。
+# この pyproject.toml が置かれているディレクトリが基準。　
 pythonpath = ["."]
+
+# pytest を引数なしで実行したとき、テストを探しに行くディレクトリ
+# を指定する設定（tests/ 配下だけを探索するように）。
+testpaths = ["tests"]
 
 
 [tool.alembic]
@@ -87,6 +92,8 @@ prepend_sys_path = [
 # on newly generated revision scripts.
 # TOML のルール: 二重の括弧 [[table_array]] → 辞書の「配列（リスト）」
 # (ruff-check と ruff-format という 2つのフックをリスト（配列）として登録したいので)
+# REVISION_SCRIPT_FILENAME は、環境変数などではなく Alembic が独自に用意しているプレースホルダー
+# alembic revision でマイグレーションファイルを新規作成した直後に、Alembic がこの文字列を 「今生成したマイグレーションファイルのパス」に自動で書き換えてコマンドを実行してくれます。
 [[tool.alembic.post_write_hooks]]
 name = "ruff-check"
 type = "exec"

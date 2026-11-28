@@ -57,6 +57,7 @@ sys.path.insert(0, "/workspaces/cc-dev-container/backend")
 ### `uv add --dev pytest` と `httpx` の関係
 - `uv add --dev pytest` で開発用依存関係（`[dependency-groups] dev`）に追加される。
 - FastAPI のテストで使う `TestClient` は内部で `httpx` を利用するが、**`fastapi[standard]` を導入しているプロジェクトであれば、すでに `httpx` が同梱されている**。そのため別途 `uv add --dev httpx` を叩く必要はない。
+- `[standard]` を付けない最小構成（uv add fastapi）にしていている場合には、`uv add --dev httpx2` とします
 
 ### `uv pytest init` というコマンドは存在しない
 - `alembic init` のような初期化コマンドが `pytest` にあるわけではない。
@@ -182,7 +183,7 @@ PostgreSQL 公式イメージの「`/docker-entrypoint-initdb.d/` 配下のス�
 - **テスト中のデータ変更（DML）はテスト関数ごとに巻き戻す**
   - テスト関数ごとにトランザクションを用意し、テスト終了後に `rollback()` する。テスト中に追加・変更したデータが元に戻るため、他のテストに関係のないデータが混ざるのを防げる。
   - `join_transaction_mode="create_savepoint"` により、テストコード内で `commit()` を呼んでも外側のトランザクションは維持され、最後に安全にロールバックできる。
-  - ロールバックで戻るのは **そのテスト関数を実行する直前の状態**。（＝テスト中に入れたデータは綺麗に消去される）。
+  - ロールバックで戻るのは **そのテスト関数を実行する直前の状態**。（＝テスト中に入れたデータは綺麗に消去される）。結局、テスト関数ごとに毎回トランザクションを作り、さらに、その中でセーブポイントを作る。
   - （※PostgreSQL の `id` 自動採番シーケンスだけはロールバックでも巻き戻らないため、`id` 番号はテストが進むにつれて増え続ける）
 
 ---
@@ -198,7 +199,7 @@ PostgreSQL 公式イメージの「`/docker-entrypoint-initdb.d/` 配下のス�
 5. `session`: pytest 実行全体で 1 度のみ
 
 #### 通常の fixture は「レイジー（遅延評価）」
-`scope="session"` であっても、通常（`autouse=False`）の fixture は**オンデマンド（遅延評価）**で動作する。
+`scope="session"` であっても、通常（`autouse=False`）の fixture は**オンデマンド（遅延評価）**で動作する。＊ Falseの時の話ね!! Trueの場合の話はこの項の後。
 
 - **① `yield` の前（または `return`）: セットアップのタイミング**
   - テストセッション開始時にすぐ実行されるわけではない。
@@ -210,8 +211,8 @@ PostgreSQL 公式イメージの「`/docker-entrypoint-initdb.d/` 配下のス�
   - **結論：一切実行（`yield` / `return`）されない。**
   - テスト関数の引数に指定されておらず、他の呼び出される fixture からも参照されていない場合、pytest はその存在を無視するため、テストセッションを開始しても `yield` されることはない。
 
-#### `autouse=True` とは
-**「テスト関数の引数に明示的に書かなくても、自動的（Auto-use）に適用・実行される」** 設定。
+#### `autouse=True` の場合
+**「テスト関数の引数に明示的に書かなくても、自動的（Auto-use）に適用・実行される」** 設定。つまり、pytest が「最初のテスト関数」を実行する直前に無条件で実行。
 
 通常、fixture を使いたいテストは関数の引数に fixture 名を書く必要がある：
 ```python
@@ -356,8 +357,8 @@ PostgreSQL では、外側のトランザクションの中に SAVEPOINT を置�
 
 #### ③ テスト終了後（fixture: db_session の後半）
 1. `session.close()`:
-   - ORM オブジェクトを Session から切り離す。未終了の SAVEPOINT があれば `ROLLBACK TO SAVEPOINT` を実行する。
+   - ORM オブジェクトを Session から切り離す（Session と ORM オブジェクトがお互いに持っている参照を消す）。未終了の SAVEPOINT があれば `ROLLBACK TO SAVEPOINT` を実行する。
 2. `transaction.rollback()`:
-   - 外側のトランザクションを巻き戻す。Session が commit した分も含め、同じ接続で行った行変更がテスト開始前の状態に戻る。ID 採番用シーケンスは進んだままになる。
+   - DB ドライバの rollback() を呼ぶ＋SQLAlchemy側でトランザクション終了状態にする。（Session が commit した分も含め、同じ接続で行った行変更がテスト開始前の状態に戻る。注意点として、ID 採番用シーケンスは進んだままになる。）
 3. `connection.close()`:
    - DB 接続をプールに返却する。物理接続はプールに保持され、後続のテストで再利用できる。

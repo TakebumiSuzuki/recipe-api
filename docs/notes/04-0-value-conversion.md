@@ -98,11 +98,13 @@ cursor.execute(
   - `Enum`: Enum メンバーを受け取ることを期待し、`str`（`'easy'`など）に変換。
   - `Boolean`: `bool` を受け取ることを期待し、`1` / `0` などが送られてきた場合には、`bool`型に変換、不正な値（文字列など）の場合にはエラーを出す。
 - **bind processor が定義されていない列（素通り）**:
-  - `Integer` / `String` / `Date` / `DateTime` / `Time` / `Float` / `Numeric`:
+  - `Integer` / `String` / `Date` / `DateTime` / `Time` / `Float` / `Numeric` / `Uuid`（`UUID`）:
 
   これらの列には、それぞれ（`int`, `str`, `date`,
-  `datetime`, `time`, `float`, `Decimal`）などの python データが渡されることを前提としており（psycopg 3 がこれらを直接 PostgreSQL のバイナリ形式にエンコードできるため）、**変換関数自体が存在しない（None / 素通り）**。
+  `datetime`, `time`, `float`, `Decimal`, `uuid.UUID`）などの Python データが渡されることを前提としており（psycopg 3 がこれらを直接 PostgreSQL のバイナリ形式にエンコードできるため）、**変換関数自体が存在しない（None / 素通り）**。
   > ※ `Integer` 列に誤って文字列を渡しても Python 側を素通りしてしまうのは、この層に型変換やバリデーション処理が存在しないためです。
+  >
+  > ※ `Uuid` / `UUID` も、PostgreSQL（デフォルトの `native_uuid=True`）では `bind_processor` が `None`（素通り）になり、psycopg 3 が `uuid.UUID` を直接 16 バイトの UUID バイナリに変換します。基本はこのデフォルト設定（native_uuid=True, as_uuid=True）を使います。（文字列を渡した場合や `as_uuid=False` の場合も素通りし、PostgreSQL 側の `::UUID` キャストで検証・変換されます）。一方、`Uuid(native_uuid=False)` を指定した場合や SQLite のようにネイティブ UUID 型を持たない DB を使う場合は、`CHAR(32)` として保存するために `bind_processor` が定義され、ハイフンなしの 32 文字の 16 進数文字列に変換されます。
 
 #### 3. psycopg の Dumper（バイト列化）
 渡された値の Python 型だけを見て、PostgreSQL プロトコルのバイト列に変換します（`int` → 整数バイナリ、`str` → UTF-8 バイト列）。

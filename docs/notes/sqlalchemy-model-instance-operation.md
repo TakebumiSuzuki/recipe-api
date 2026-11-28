@@ -58,10 +58,10 @@ INSERT INTO users (status, bio) VALUES ('active', NULL) RETURNING id, created_at
 
 | カラム | 保存結果 | 誰が補完するのか | 具体的な仕組み |
 | :--- | :--- | :--- | :--- |
-| **`status`** | `'active'` | **SQLAlchemy（Python側）** | `default` 設定に基づき、SQLAlchemy が値を生成して SQL の INSERT 文に含める |
-| **`id`** | 自動採番値（`1` など） | **データベース（DB側）** | SQLAlchemy が SQL からカラムを省くため、DB が自動で連番（PostgreSQL では `SERIAL` のシーケンス）を採番する |
-| **`created_at`** | 現在日時 | **データベース（DB側）** | SQLAlchemy が SQL からカラムを省くため、DB がテーブルの初期値（`DEFAULT` 設定）を適用する |
-| **`bio`** | `NULL` | **SQLAlchemy（Python側）** | デフォルト設定がないため、SQLAlchemy が `NULL` を明示的に INSERT 文に含める |
+| **`id`** | 自動採番値（`1` など） | **データベース（DB側）** | SQLAlchemy が SQL からカラムを省くため、DB が自動で連番（PostgreSQL では `SERIAL` のシーケンス）を採番する<br>※`None` 以外の値を明示的に渡せばその値がそのまま INSERT されるが、シーケンスが進まず後続の重複エラーの原因になるため**おすすめしない** |
+| **`status`** | `'active'` | **SQLAlchemy（Python側）** | `default` 設定に基づき、SQLAlchemy が値を生成して SQL の INSERT 文に含める<br>※`None` 以外の値を明示的に渡せば `default` は使われずその値が INSERT される |
+| **`created_at`** | 現在日時 | **データベース（DB側）** | SQLAlchemy が SQL からカラムを省くため、DB がテーブルの初期値（`DEFAULT` 設定）を適用する<br>※`None` 以外の値を明示的に渡せば DB の初期値は使われずその値が INSERT される |
+| **`bio`** | `NULL` | **SQLAlchemy（Python側）** | デフォルト設定がないため、SQLAlchemy が `NULL` を明示的に INSERT 文に含める。`bio` カラムは `nullable` なのでそのまま保存される<br>※`None` 以外の値を明示的に渡せばその値がそのまま INSERT される |
 
 > **📌 コラム：`bio` に `| None` をつけなかったら？**
 > `bio: Mapped[str] = mapped_column()` とすると、`bio` は **NOT NULL のカラム**になります。
@@ -112,9 +112,9 @@ class User(Base):
 user = User(status=None, created_at=None, bio=None)
 ```
 
-直感的には「型も `| None`（NULL許容）だし、明示的に `None` を渡したのだから NULL が保存されそう」に見えますが、**`default` や `server_default` があるカラムではデフォルト値が勝つ** という挙動になります。
+直感的には「型も `| None`（NULL許容）だし、明示的に `None` を渡したのだから NULL が保存されそう」に見えますが、**`default` や `server_default` があるカラムではデフォルト値が勝つ** という挙動になります。ただし、これは INSERT 時に通常の `None` を渡した場合の挙動であり、UPDATE 時に `None` を代入した場合や、INSERT 時に `null()` を使った場合には `NULL` として送られます（詳細は後述）。
 
-> **📝 この挙動は値が `None` のときだけ**
+> **📝 この挙動は値が `None` のときだけ。**
 > `User(status="inactive")` のように普通の値を渡せば、その値がそのまま INSERT され、`default` は使われません。
 > デフォルト値に置き換わるのは、渡した値が `None` の場合に限られます。
 

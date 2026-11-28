@@ -283,7 +283,6 @@ class Recipe(Base):
     # ・アプリ側で渡さなくても、None を渡しても安全に NULL が入る
     published_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
-        nullable=True,
     )
 
     # ② 作成日時:
@@ -332,8 +331,8 @@ updated_at: Mapped[datetime | None] = mapped_column(
 
 ```sql
 -- 実際に発行される SQL
-UPDATE recipes 
-SET title = '新しいタイトル', 
+UPDATE recipes
+SET title = '新しいタイトル',
     updated_at = now()   -- ★ SQLAlchemy が自動で差し込んだ命令！
 WHERE recipes.id = 1;
 ```

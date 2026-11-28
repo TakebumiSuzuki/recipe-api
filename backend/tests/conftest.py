@@ -16,13 +16,17 @@ from app.models import Base, Ingredient, Recipe, RecipeIngredient, Step, Tag, Us
 def engine() -> Generator[Engine]:
     _engine = create_engine(url=get_settings().test_database_uri)
     yield _engine
-    _engine.dispose()  # 全テスト終了時に接続プールを破棄
+    # 全テスト終了時に接続プールを破棄
+    _engine.dispose()
 
 
+# autouse=True により、テスト関数の引数に指定しなくても、
+# 最初のテストが始まる前に必ず 1 回実行される。（つまり、lazyにはならない）
 @pytest.fixture(scope="session", autouse=True)
 def setup_test_db(engine: Engine) -> Generator[None]:
     Base.metadata.create_all(bind=engine)
     yield
+    # create_allで作ったテーブルが全部消えてまっさらな DB に戻る
     Base.metadata.drop_all(bind=engine)
 
 
@@ -34,8 +38,14 @@ def db_session(engine: Engine) -> Generator[Session]:
 
     # sqlalchemyのブラックボックス的な内部実装により、以下の行があることにより、
     # テスト関数内で flush()したときに、join_transaction_mode="create_savepoint"
-    # の設定と相まって、savepointが送信されることになる。逆に、以下の行を書かないと、
+    # の設定により、savepointが送信されることになる。逆に、以下の行を書かないと、
     # 内部での if 条件に引っかからずに、flush() で通常のトランザクションだけが作られる。
+    # （join_transaction_mode="create_savepoint" は、渡された connectionの中に、
+    # RootTransactionオブジェクトがある場合だけ Session の操作（開始・commit・
+    # rollback　など）を SAVEPOINT / RELEASE SAVEPOINT / ROLLBACK TO SAVEPOINT
+    # にすげ替える仕組み。で、結局のところ、このコードのやることは、SQLAlchemy 側で
+    # RootTransactionオブジェクトを作り、「この connection はトランザクション中」
+    # という状態にしているだけ。DB への BEGIN は実際の通信が行われるときに自動でなされる）
     transaction = connection.begin()
 
     session = Session(
@@ -46,10 +56,15 @@ def db_session(engine: Engine) -> Generator[Session]:
     )
     yield session
 
+    # Session と ORM オブジェクトがお互いに持っている参照を消す。
+    # 未終了の SAVEPOINT があれば ROLLBACK TO SAVEPOINT を実行する。
     session.close()
+
+    # DB に ROLLBACK 送信。SQLAlchemy側では RootTransaction を終了解除。
     transaction.rollback()
-    # プールに接続を返却する。「切断」ではなく「プールへの返却」
-    # 物理的な接続は _engine（のプール）がそのままキープしています。
+
+    # 接続をプールに返却（切断ではない）。
+    # 物理的な接続は _engine（のプール）がそのままキープしている。
     connection.close()
 
 
@@ -170,7 +185,10 @@ def sample_recipes(
         user=None,
         tags=[tag_yoshoku],
     )
-
+    # 以下の部分で、tag_washoku, tag_yoshoku は add_allに加えなくても良い。
+    # Recipe.tags は cascade を明示していないため、SQLAlchemyのデフォルト値
+    # （save-update, merge）が使われる。よって、r_a, r_b, r_c をセッションに
+    # 追加した時点で両方の Tagも自動的にカスケードでセッションへ追加・保存される。
     db_session.add_all([tag_washoku, tag_yoshoku, r_a, r_b, r_c])
     db_session.commit()
 
